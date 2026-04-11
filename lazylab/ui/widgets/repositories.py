@@ -39,7 +39,7 @@ class ReposContainer(LazyLabContainer):
         )
 
     def compose(self) -> ComposeResult:
-        self.border_title = Content.from_markup("\\[1] Repositories")
+        self.border_title = Content.from_markup("Repositories")
         yield self._table
 
     @property

@@ -58,3 +58,16 @@ class MergeRequest(BaseModel):
     user_notes_count: int = 0
     # Project path for context
     project_path: str = ""
+
+
+class MRDiffFile(BaseModel):
+    old_path: str
+    new_path: str
+    diff: str
+    new_file: bool = False
+    renamed_file: bool = False
+    deleted_file: bool = False
+
+
+class MRDiffData(BaseModel):
+    files: list[MRDiffFile] = []
