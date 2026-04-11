@@ -1,0 +1,56 @@
+[project]
+name = "lazylab"
+description = "A Terminal UI for interacting with GitLab"
+readme = "README.md"
+license = { file = "LICENSE" }
+
+dynamic = ["version"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+]
+
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=1.0.0",
+    "click>=8.1.7",
+    "pydantic>=2.0,<3",
+    "python-gitlab>=4.0.0",
+    "pyyaml>=6.0",
+    "anyio>=4.0.0",
+]
+
+[project.scripts]
+gt = "lazylab.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.envs.default]
+installer = "uv"
+
+[tool.hatch.version]
+path = "lazylab/version.py"
+
+[tool.hatch.build.targets.wheel]
+include = ["lazylab*"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+reportArgumentType = "warning"
+
+[dependency-groups]
+dev = [
+    "pyright",
+    "ruff",
+    "textual-dev",
+    "pytest>=8.0",
+    "pytest-asyncio",
+]
