@@ -15,6 +15,7 @@ from lazylab.lib.logging import ll
 from lazylab.lib.messages import MRSelected
 from lazylab.models.gitlab import ApprovalStatus, MergeRequest, Project
 from lazylab.ui.widgets.common import LazyLabContainer, SearchableDataTable, TableRow
+from lazylab.ui.widgets.mr_diff import MRDiffTabContent
 
 
 def _mr_status_icon(state: MRState) -> str:
@@ -57,7 +58,7 @@ class MRContainer(LazyLabContainer):
         )
 
     def compose(self) -> ComposeResult:
-        self.border_title = Content.from_markup("\\[2] Merge Requests")
+        self.border_title = Content.from_markup("Merge Requests")
         yield self._table
 
     @property
@@ -249,14 +250,39 @@ class MROverviewTabPane(TabPane):
 
 
 class MRDiffTabPane(TabPane):
-    """Placeholder for Phase 5."""
+    DEFAULT_CSS = """
+    MRDiffTabPane {
+        padding: 0;
+        height: 1fr;
+    }
+    """
 
     def __init__(self, mr: MergeRequest) -> None:
         super().__init__("Diff", id="mr-diff-tab")
         self.mr = mr
 
     def compose(self) -> ComposeResult:
-        yield Label("Diff viewer will be implemented in Phase 5")
+        yield MRDiffTabContent(id="mr-diff-content")
+
+    @property
+    def diff_content(self) -> MRDiffTabContent:
+        return self.query_one("#mr-diff-content", MRDiffTabContent)
+
+    def on_mount(self) -> None:
+        self.diff_content.show_loading()
+        self._load_diff()
+
+    @work
+    async def _load_diff(self) -> None:
+        project = LazyLabContext.current_project
+        if not project:
+            return
+        try:
+            diff_data = await mr_api.get_mr_changes(project.id, self.mr.iid)
+            self.diff_content.load_diff(diff_data)
+        except Exception:
+            ll.exception("Failed to load MR diff")
+            self.diff_content.show_error("Error loading diff")
 
 
 class MRConversationTabPane(TabPane):

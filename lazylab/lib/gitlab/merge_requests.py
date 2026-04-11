@@ -2,7 +2,7 @@ from typing import Any
 
 from lazylab.lib.context import LazyLabContext
 from lazylab.lib.logging import ll
-from lazylab.models.gitlab import ApprovalStatus, MergeRequest, User
+from lazylab.models.gitlab import ApprovalStatus, MergeRequest, MRDiffData, MRDiffFile, User
 
 
 def _user_from_dict(data: dict[str, Any]) -> User:
@@ -71,6 +71,31 @@ async def get_merge_request(project_id: int, mr_iid: int, project_path: str) -> 
 
     gl_mr = await client._run_sync(_fetch)
     return _mr_to_model(gl_mr, project_path)
+
+
+async def get_mr_changes(project_id: int, mr_iid: int) -> MRDiffData:
+    ll.debug(f"Getting changes for MR !{mr_iid} in project {project_id}")
+    client = LazyLabContext.client
+
+    gl_project = await client.get_raw_project(project_id)
+
+    def _fetch() -> Any:
+        mr = gl_project.mergerequests.get(mr_iid)
+        return mr.changes()
+
+    result = await client._run_sync(_fetch)
+    files = [
+        MRDiffFile(
+            old_path=c["old_path"],
+            new_path=c["new_path"],
+            diff=c.get("diff", ""),
+            new_file=c.get("new_file", False),
+            renamed_file=c.get("renamed_file", False),
+            deleted_file=c.get("deleted_file", False),
+        )
+        for c in result.get("changes", [])
+    ]
+    return MRDiffData(files=files)
 
 
 async def get_mr_approvals(project_id: int, mr_iid: int) -> ApprovalStatus:

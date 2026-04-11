@@ -48,4 +48,5 @@ class LazyLab(App):
         await self.push_screen(main_screen)
 
     def on_mount(self) -> None:
+        self.animation_level = "none"
         self.theme = LazyLabContext.config.appearance.theme.name

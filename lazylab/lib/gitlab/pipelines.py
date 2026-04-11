@@ -14,7 +14,7 @@ async def get_latest_pipeline_for_mr(project_id: int, mr_iid: int) -> Pipeline |
 
     def _fetch() -> Any:
         mr = gl_project.mergerequests.get(mr_iid)
-        pipelines = mr.pipelines.list(per_page=1)
+        pipelines = mr.pipelines.list(per_page=1, get_all=False)
         return pipelines[0] if pipelines else None
 
     gl_pipeline = await client._run_sync(_fetch)

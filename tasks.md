@@ -42,11 +42,20 @@
 - [x] Auto-focus repos table after project load (Enter key not working)
 - [x] Forward RepoSelected to MRContainer via parent (Textual messages only bubble up)
 
-## Future Phases
+## Phase 5: MR Detail — Diff Tab
 
-- [ ] Phase 5: Diff tab — built-in viewer + optional external pager
-  - **DoD:** Diff tab shows file-based diff with syntax highlighting
-  - **Testing:** E2E test for diff rendering
+- [x] Add MRDiffFile and MRDiffData Pydantic models
+- [x] Add get_mr_changes() API function (fetches MR file changes via python-gitlab)
+- [x] Add ctrl+d / ctrl+u keybindings for diff scrolling
+- [x] Implement DiffFileTree widget (Tree[MRDiffFile] with directory grouping, status icons)
+- [x] Implement DiffContentView widget (VerticalScroll + Static with Rich markup coloring)
+- [x] Implement MRDiffTabContent layout (Horizontal split: file tree 30% + diff content 70%)
+- [x] Replace MRDiffTabPane placeholder with real implementation (async load via @work)
+- [x] Unit tests for models (7 tests) and diff rendering (9 tests)
+- [x] E2E test for diff tab rendering
+- [x] All tests pass (44 unit + 2 e2e), lint clean, 0 pyright errors
+
+## Future Phases
 - [ ] Phase 6: Conversation tab — GitLab discussions/notes
   - **DoD:** Threaded comments display with resolve status
   - **Testing:** E2E test for conversation rendering
