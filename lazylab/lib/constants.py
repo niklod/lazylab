@@ -1,7 +1,7 @@
 from enum import StrEnum
 from pathlib import Path
 
-CONFIG_FOLDER = Path.home() / ".config" / "gitlab-tui"
+CONFIG_FOLDER = Path.home() / ".config" / "lazylab"
 CONFIG_FILE = CONFIG_FOLDER / "config.yaml"
 
 # Symbols used in UI tables

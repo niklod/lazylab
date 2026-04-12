@@ -57,7 +57,19 @@ class DiffFileTree(Tree[MRDiffFile]):
     BINDINGS = [
         LazyLabBindings.TABLE_DOWN,
         LazyLabBindings.TABLE_CURSOR_UP,
+        LazyLabBindings.TABLE_SCROLL_TOP,
+        LazyLabBindings.TABLE_SCROLL_BOTTOM,
+        LazyLabBindings.HALF_PAGE_DOWN,
+        LazyLabBindings.HALF_PAGE_UP,
     ]
+
+    def action_half_page_down(self) -> None:
+        for _ in range(self.size.height // 2):
+            self.action_cursor_down()
+
+    def action_half_page_up(self) -> None:
+        for _ in range(self.size.height // 2):
+            self.action_cursor_up()
 
     def __init__(self) -> None:
         super().__init__("Files", id="diff-file-tree")
@@ -130,8 +142,8 @@ class MRDiffTabContent(Horizontal):
     """
 
     BINDINGS = [
-        LazyLabBindings.DIFF_SCROLL_DOWN,
-        LazyLabBindings.DIFF_SCROLL_UP,
+        LazyLabBindings.HALF_PAGE_DOWN,
+        LazyLabBindings.HALF_PAGE_UP,
     ]
 
     def __init__(self, **kwargs) -> None:
@@ -143,10 +155,10 @@ class MRDiffTabContent(Horizontal):
         yield self._file_tree
         yield self._diff_content
 
-    def action_diff_scroll_down(self) -> None:
+    def action_half_page_down(self) -> None:
         self._diff_content.scroll_relative(y=self._diff_content.size.height // 2)
 
-    def action_diff_scroll_up(self) -> None:
+    def action_half_page_up(self) -> None:
         self._diff_content.scroll_relative(y=-(self._diff_content.size.height // 2))
 
     @on(Tree.NodeSelected)

@@ -37,7 +37,25 @@ class VimLikeDataTable(DataTable[TableCellType]):
         LazyLabBindings.TABLE_PAGE_LEFT,
         LazyLabBindings.TABLE_SCROLL_TOP,
         LazyLabBindings.TABLE_SCROLL_BOTTOM,
+        LazyLabBindings.HALF_PAGE_DOWN,
+        LazyLabBindings.HALF_PAGE_UP,
     ]
+
+    def action_scroll_home(self) -> None:
+        self.move_cursor(row=0)
+
+    def action_scroll_end(self) -> None:
+        self.move_cursor(row=self.row_count - 1)
+
+    def action_half_page_down(self) -> None:
+        half = self.size.height // 2
+        target = min(self.cursor_row + half, self.row_count - 1)
+        self.move_cursor(row=target)
+
+    def action_half_page_up(self) -> None:
+        half = self.size.height // 2
+        target = max(self.cursor_row - half, 0)
+        self.move_cursor(row=target)
 
 
 class ToggleableSearchInput(Input):
@@ -49,7 +67,7 @@ class ToggleableSearchInput(Input):
 
 
 class SearchableDataTable(Vertical, Generic[T]):
-    BINDINGS = [LazyLabBindings.SEARCH_TABLE]
+    BINDINGS = [LazyLabBindings.SEARCH_TABLE, LazyLabBindings.CLEAR_SEARCH]
 
     DEFAULT_CSS = """
     ToggleableSearchInput {
@@ -159,6 +177,15 @@ class SearchableDataTable(Vertical, Generic[T]):
                 self.items[key] = item
                 self.table.add_row(*row, key=key)
         self.sort_table()
+
+    def action_clear_search(self) -> None:
+        if not self.search_input.value.strip() and not self.search_input.display:
+            return
+        self.search_input.value = ""
+        self.search_input.can_focus = False
+        self.search_input.display = False
+        self.apply_current_filter()
+        self.table.focus()
 
     @on(Input.Submitted)
     async def handle_submitted_search(self) -> None:

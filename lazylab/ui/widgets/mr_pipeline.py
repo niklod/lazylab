@@ -145,8 +145,8 @@ class JobLogView(VerticalScroll):
         LazyLabBindings.CLOSE_LOG,
         LazyLabBindings.LOG_SCROLL_DOWN_LINE,
         LazyLabBindings.LOG_SCROLL_UP_LINE,
-        LazyLabBindings.DIFF_SCROLL_DOWN,
-        LazyLabBindings.DIFF_SCROLL_UP,
+        LazyLabBindings.HALF_PAGE_DOWN,
+        LazyLabBindings.HALF_PAGE_UP,
         LazyLabBindings.LOG_SCROLL_TOP,
         LazyLabBindings.LOG_SCROLL_BOTTOM,
     ]
@@ -213,10 +213,10 @@ class JobLogView(VerticalScroll):
     def action_log_scroll_up_line(self) -> None:
         self.scroll_relative(y=-1)
 
-    def action_diff_scroll_down(self) -> None:
+    def action_half_page_down(self) -> None:
         self.scroll_relative(y=self.size.height // 2)
 
-    def action_diff_scroll_up(self) -> None:
+    def action_half_page_up(self) -> None:
         self.scroll_relative(y=-(self.size.height // 2))
 
     def action_log_scroll_top(self) -> None:
