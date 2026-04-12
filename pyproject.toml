@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-gt = "lazylab.cli:cli"
+lazylab = "lazylab.cli:cli"
 
 [build-system]
 requires = ["hatchling"]

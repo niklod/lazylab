@@ -21,9 +21,9 @@ Download the latest binary for your platform from [Releases](../../releases).
 ```bash
 # macOS / Linux
 chmod +x lazylab-*
-mv lazylab-* /usr/local/bin/gt
+mv lazylab-* /usr/local/bin/lazylab
 
-# Windows — rename to gt.exe, add to PATH
+# Windows — rename to lazylab.exe, add to PATH
 ```
 
 ### From source (requires Python 3.11+ and [uv](https://docs.astral.sh/uv/))
@@ -32,14 +32,14 @@ mv lazylab-* /usr/local/bin/gt
 git clone https://github.com/niklod/lazylab.git
 cd lazylab
 uv sync
-uv run gt
+uv run lazylab
 ```
 
 ### With pip
 
 ```bash
 pip install git+https://github.com/niklod/lazylab.git
-gt
+lazylab
 ```
 
 ## Configuration
@@ -85,10 +85,10 @@ cache:
 ## Usage
 
 ```bash
-gt              # launch TUI
-gt version      # show version
-gt dump-config  # print current config (token redacted)
-gt clear-cache  # clear API cache
+lazylab              # launch TUI
+lazylab version      # show version
+lazylab dump-config  # print current config (token redacted)
+lazylab clear-cache  # clear API cache
 ```
 
 ## Keybindings
@@ -109,17 +109,6 @@ gt clear-cache  # clear API cache
 | `R` | Force refresh |
 | `?` | Help |
 | `q` | Quit |
-
-## Creating a release
-
-Tag a version and push:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-GitHub Actions will build binaries for Linux, macOS (Intel + ARM), and Windows, then create a release.
 
 ## License
 
