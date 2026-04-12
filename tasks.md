@@ -38,7 +38,7 @@
 
 ## Bugfixes
 
-- [x] Rename CLI command from `lazylab` to `gt`, config path to `~/.config/gitlab-tui/`
+- [x] Rename CLI command from `lazylab` to `gt`, config path to `~/.config/lazylab/`
 - [x] Auto-focus repos table after project load (Enter key not working)
 - [x] Forward RepoSelected to MRContainer via parent (Textual messages only bubble up)
 

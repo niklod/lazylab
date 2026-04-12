@@ -28,13 +28,14 @@ class LazyLabBindings:
 
     # Searchable table
     SEARCH_TABLE = Binding("/", "focus_search", "Search", id="common.table.search")
+    CLEAR_SEARCH = Binding("escape", "clear_search", "Clear Search", id="common.table.clear_search", show=False)
 
     # Repo actions
     TOGGLE_FAVORITE = Binding("f", "toggle_favorite", "Fav", id="repo.toggle_favorite")
 
-    # Diff viewer
-    DIFF_SCROLL_DOWN = Binding("ctrl+d", "diff_scroll_down", "Scroll Down", id="diff.scroll_down", show=False)
-    DIFF_SCROLL_UP = Binding("ctrl+u", "diff_scroll_up", "Scroll Up", id="diff.scroll_up", show=False)
+    # Half-page scroll (vim ctrl+d / ctrl+u) — used in tables, trees, and scroll views
+    HALF_PAGE_DOWN = Binding("ctrl+d", "half_page_down", "Half Page Down", id="common.half_page_down", show=False)
+    HALF_PAGE_UP = Binding("ctrl+u", "half_page_up", "Half Page Up", id="common.half_page_up", show=False)
 
     # Open in browser
     OPEN_IN_BROWSER = Binding("o", "open_in_browser", "Open URL", id="common.open_browser")

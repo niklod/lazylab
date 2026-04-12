@@ -13,6 +13,13 @@ class LazyLab(App):
 
     TITLE = "LazyLab"
 
+    CSS = """
+    * {
+        scrollbar-size: 1 1;
+        overflow-x: hidden;
+    }
+    """
+
     BINDINGS = [
         LazyLabBindings.QUIT_APP,
         LazyLabBindings.OPEN_COMMAND_PALETTE,
@@ -23,7 +30,7 @@ class LazyLab(App):
         config = LazyLabContext.config
         if not config.gitlab.token:
             self.notify(
-                "No GitLab token configured. Edit ~/.config/gitlab-tui/config.yaml",
+                "No GitLab token configured. Edit ~/.config/lazylab/config.yaml",
                 title="Configuration Required",
                 severity="error",
                 timeout=10,
@@ -37,7 +44,7 @@ class LazyLab(App):
             self.notify(f"Authenticated as {user.username}", title="LazyLab")
         except Exception:
             self.notify(
-                "Authentication failed. Check your token and GitLab URL in ~/.config/gitlab-tui/config.yaml",
+                "Authentication failed. Check your token and GitLab URL in ~/.config/lazylab/config.yaml",
                 title="Error",
                 severity="error",
                 timeout=10,

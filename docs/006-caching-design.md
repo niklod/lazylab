@@ -91,7 +91,7 @@ Pydantic models are serialised via `model_dump(mode="json")` with a
 
 ```yaml
 cache:
-  directory: ~/.config/gitlab-tui/.cache
+  directory: ~/.config/lazylab/.cache
   ttl: 600  # seconds
 ```
 
