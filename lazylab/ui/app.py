@@ -1,8 +1,11 @@
 from textual.app import App
 
 from lazylab.lib.bindings import LazyLabBindings
+from lazylab.lib.cache import api_cache
 from lazylab.lib.context import LazyLabContext
 from lazylab.lib.logging import ll
+from lazylab.lib.messages import CacheRefreshed
+from lazylab.ui.screens.help import HelpScreen
 
 
 class LazyLab(App):
@@ -47,6 +50,19 @@ class LazyLab(App):
         main_screen = LazyLabMainScreen()
         await self.push_screen(main_screen)
 
+    def action_open_help(self) -> None:
+        self.push_screen(HelpScreen())
+
     def on_mount(self) -> None:
         self.animation_level = "none"
         self.theme = LazyLabContext.config.appearance.theme.name
+        api_cache._on_refresh = self._notify_cache_refresh
+
+    def _notify_cache_refresh(self, namespace: str, key: str) -> None:
+        self.post_message(CacheRefreshed(namespace, key))
+
+    def on_cache_refreshed(self, message: CacheRefreshed) -> None:
+        from lazylab.ui.screens.primary import LazyLabMainScreen
+
+        if isinstance(self.screen, LazyLabMainScreen):
+            self.screen.handle_cache_refresh(message.cache_namespace, message.cache_key)

@@ -9,13 +9,17 @@ from textual.widgets import DataTable, Label, Static, TabPane
 
 import lazylab.lib.gitlab.merge_requests as mr_api
 import lazylab.lib.gitlab.pipelines as pipeline_api
+from lazylab.lib.bindings import LazyLabBindings
+from lazylab.lib.cache import api_cache
 from lazylab.lib.constants import MROwnerFilter, MRState, PipelineStatus
 from lazylab.lib.context import LazyLabContext
 from lazylab.lib.logging import ll
-from lazylab.lib.messages import MRSelected
+from lazylab.lib.messages import MRActionCompleted, MRSelected
 from lazylab.models.gitlab import ApprovalStatus, MergeRequest, Project
+from lazylab.ui.screens.mr_actions import CloseMRScreen, MergeMRScreen, MergeResult
 from lazylab.ui.widgets.common import LazyLabContainer, SearchableDataTable, TableRow
 from lazylab.ui.widgets.mr_diff import MRDiffTabContent
+from lazylab.ui.widgets.mr_pipeline import MRPipelineTabContent
 
 
 def _mr_status_icon(state: MRState) -> str:
@@ -44,6 +48,7 @@ class MRContainer(LazyLabContainer):
         super().__init__(*args, **kwargs)
         self.iid_column_index = 0
         self._current_project: Project | None = None
+        self._pending_action_mr: MergeRequest | None = None
 
         self._table: SearchableDataTable[MergeRequest] = SearchableDataTable(
             id="searchable_mrs_table",
@@ -121,6 +126,7 @@ class MRContainer(LazyLabContainer):
 
         self.searchable_table.clear_rows()
         self.searchable_table.add_items(mrs)
+        self.searchable_table.apply_current_filter()
         self.searchable_table.loading = False
 
     @on(DataTable.RowSelected, "#mrs_table")
@@ -128,6 +134,74 @@ class MRContainer(LazyLabContainer):
         mr = await self.get_selected_mr()
         if mr is not None:
             self.post_message(MRSelected(mr))
+
+    async def action_close_mr(self) -> None:
+        mr = await self.get_selected_mr()
+        if mr is None:
+            return
+        if mr.state != MRState.OPENED:
+            self.app.notify(f"Cannot close: MR !{mr.iid} is {mr.state.value}", severity="warning")
+            return
+        self._pending_action_mr = mr
+        self.app.push_screen(CloseMRScreen(mr), callback=self._on_close_confirmed)
+
+    def _on_close_confirmed(self, confirmed: bool | None) -> None:
+        if not confirmed or self._pending_action_mr is None:
+            self._pending_action_mr = None
+            return
+        self._execute_close(self._pending_action_mr)
+        self._pending_action_mr = None
+
+    @work
+    async def _execute_close(self, mr: MergeRequest) -> None:
+        project = self._current_project
+        if project is None:
+            return
+        try:
+            updated_mr = await mr_api.close_merge_request(project.id, mr.iid, project.path_with_namespace)
+            self.app.notify(f"Closed MR !{mr.iid}: {mr.title}")
+            self.post_message(MRActionCompleted(updated_mr))
+            self.load_merge_requests(project)
+        except Exception:
+            ll.exception(f"Failed to close MR !{mr.iid}")
+            self.app.notify(f"Failed to close MR !{mr.iid}", severity="error")
+
+    async def action_merge_mr(self) -> None:
+        mr = await self.get_selected_mr()
+        if mr is None:
+            return
+        if mr.state != MRState.OPENED:
+            self.app.notify(f"Cannot merge: MR !{mr.iid} is {mr.state.value}", severity="warning")
+            return
+        self._pending_action_mr = mr
+        self.app.push_screen(MergeMRScreen(mr), callback=self._on_merge_confirmed)
+
+    def _on_merge_confirmed(self, result: MergeResult | None) -> None:
+        if result is None or self._pending_action_mr is None:
+            self._pending_action_mr = None
+            return
+        self._execute_merge(self._pending_action_mr, result)
+        self._pending_action_mr = None
+
+    @work
+    async def _execute_merge(self, mr: MergeRequest, result: MergeResult) -> None:
+        project = self._current_project
+        if project is None:
+            return
+        try:
+            updated_mr = await mr_api.merge_merge_request(
+                project.id,
+                mr.iid,
+                project.path_with_namespace,
+                should_remove_source_branch=result.should_remove_source_branch,
+                merge_when_pipeline_succeeds=result.merge_when_pipeline_succeeds,
+            )
+            self.app.notify(f"Merged MR !{mr.iid}: {mr.title}")
+            self.post_message(MRActionCompleted(updated_mr))
+            self.load_merge_requests(project)
+        except Exception:
+            ll.exception(f"Failed to merge MR !{mr.iid}")
+            self.app.notify(f"Failed to merge MR !{mr.iid}", severity="error")
 
 
 def _pipeline_status_icon(status: PipelineStatus) -> str:
@@ -221,6 +295,20 @@ class MROverviewTabPane(TabPane):
     def watch_pipeline_text(self, value: str) -> None:
         self._update_status_label("pipeline-status", "Pipeline", value)
 
+    def _matches_current_mr(self, key: str) -> bool:
+        project = LazyLabContext.current_project
+        if not project:
+            return False
+        return f"{project.id}:{self.mr.iid}" in key
+
+    def handle_cache_refresh(self, namespace: str, key: str) -> None:
+        if not self.is_mounted:
+            return
+        if namespace == "mr_approvals" and self._matches_current_mr(key):
+            self._load_approval()
+        elif namespace == "pipeline_latest" and self._matches_current_mr(key):
+            self._load_pipeline()
+
     @work
     async def _load_approval(self) -> None:
         project = LazyLabContext.current_project
@@ -297,11 +385,64 @@ class MRConversationTabPane(TabPane):
 
 
 class MRPipelineTabPane(TabPane):
-    """Placeholder for Phase 7."""
+    DEFAULT_CSS = """
+    MRPipelineTabPane {
+        padding: 0;
+        height: 1fr;
+    }
+    """
+
+    BINDINGS = [LazyLabBindings.FORCE_REFRESH]
 
     def __init__(self, mr: MergeRequest) -> None:
         super().__init__("Pipeline", id="mr-pipeline-tab")
         self.mr = mr
 
     def compose(self) -> ComposeResult:
-        yield Label("Pipeline details will be implemented in Phase 7")
+        yield MRPipelineTabContent(id="mr-pipeline-content")
+
+    @property
+    def pipeline_content(self) -> MRPipelineTabContent:
+        return self.query_one("#mr-pipeline-content", MRPipelineTabContent)
+
+    def on_mount(self) -> None:
+        self.pipeline_content.show_loading()
+        self._load_pipeline()
+
+    def handle_cache_refresh(self, namespace: str, key: str) -> None:
+        if not self.is_mounted:
+            return
+        project = LazyLabContext.current_project
+        if not project:
+            return
+        mr_prefix = f"{project.id}:{self.mr.iid}"
+        if namespace == "pipeline_detail" and mr_prefix in key:
+            self._load_pipeline()
+
+    def action_force_refresh(self) -> None:
+        project = LazyLabContext.current_project
+        if not project:
+            return
+        api_cache.invalidate(f"pipeline_detail:{project.id}:{self.mr.iid}")
+        api_cache.invalidate(f"pipeline_latest:{project.id}:{self.mr.iid}")
+        self.pipeline_content.show_loading()
+        self._load_pipeline()
+        self.app.notify("Pipeline refreshed")
+
+    @work(exclusive=True)
+    async def _load_pipeline(self) -> None:
+        project = LazyLabContext.current_project
+        if not project:
+            return
+        try:
+            detail = await pipeline_api.get_pipeline_detail(project.id, self.mr.iid)
+            if not self.is_mounted:
+                return
+            if detail is None:
+                self.pipeline_content.show_empty()
+            else:
+                self.pipeline_content.load_pipeline(detail)
+        except Exception:
+            ll.exception("Failed to load pipeline details")
+            if self.is_mounted:
+                self.pipeline_content.show_error("Error loading pipeline")

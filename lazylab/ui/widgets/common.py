@@ -148,8 +148,8 @@ class SearchableDataTable(Vertical, Generic[T]):
         if write_to_cache:
             self.save_to_cache()
 
-    @on(Input.Submitted)
-    async def handle_submitted_search(self) -> None:
+    def apply_current_filter(self) -> None:
+        """Reapply the current search filter to the table rows."""
         search_query = self.search_input.value.strip().lower()
         self.table.clear()
         self.items = {}
@@ -158,6 +158,10 @@ class SearchableDataTable(Vertical, Generic[T]):
                 self.items[key] = item
                 self.table.add_row(*self.item_to_row(item), key=key)
         self.sort_table()
+
+    @on(Input.Submitted)
+    async def handle_submitted_search(self) -> None:
+        self.apply_current_filter()
         self.table.focus()
 
 

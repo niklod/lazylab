@@ -40,6 +40,21 @@ class Pipeline(BaseModel):
     updated_at: datetime
 
 
+class PipelineJob(BaseModel):
+    id: int
+    name: str
+    stage: str
+    status: PipelineStatus
+    web_url: str
+    duration: float | None = None
+    allow_failure: bool = False
+
+
+class PipelineDetail(BaseModel):
+    pipeline: Pipeline
+    jobs: list[PipelineJob] = []
+
+
 class MergeRequest(BaseModel):
     id: int
     iid: int
