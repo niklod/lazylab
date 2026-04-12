@@ -22,9 +22,6 @@ jobs:
           - os: ubuntu-latest
             target: linux
             asset_name: lazylab-linux-amd64
-          - os: macos-13
-            target: macos-amd64
-            asset_name: lazylab-macos-amd64
           - os: macos-latest
             target: macos-arm64
             asset_name: lazylab-macos-arm64
