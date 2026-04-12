@@ -1,3 +1,5 @@
+from typing import Callable
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.content import Content
@@ -14,9 +16,15 @@ from lazylab.models.gitlab import Project
 from lazylab.ui.widgets.common import LazyLabContainer, SearchableDataTable, TableRow
 
 
-def project_to_row(project: Project) -> TableRow:
-    favorited = favorite_string(project.path_with_namespace in LazyLabContext.config.repositories.favorites)
-    return (favorited, project.path_with_namespace)
+def _make_project_to_row() -> Callable[[Project], TableRow]:
+    """Build a project_to_row closure with a frozenset for O(1) favorites lookup."""
+    favorites = frozenset(LazyLabContext.config.repositories.favorites)
+
+    def project_to_row(project: Project) -> TableRow:
+        favorited = favorite_string(project.path_with_namespace in favorites)
+        return (favorited, project.path_with_namespace)
+
+    return project_to_row
 
 
 class ReposContainer(LazyLabContainer):
@@ -33,7 +41,7 @@ class ReposContainer(LazyLabContainer):
             search_input_id="repo_search",
             sort_key="favorite",
             item_to_key=lambda p: p.path_with_namespace,
-            item_to_row=project_to_row,
+            item_to_row=_make_project_to_row(),
             cache_name="projects",
             project_based_cache=False,
         )
@@ -98,6 +106,7 @@ class ReposContainer(LazyLabContainer):
 
         updated = path in LazyLabContext.config.repositories.favorites
         self.table.update_cell(path, "favorite", favorite_string(updated))
+        self._table.item_to_row = _make_project_to_row()
         self.searchable_table.sort_table()
 
     @on(DataTable.RowSelected, "#repos_table")

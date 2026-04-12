@@ -190,12 +190,20 @@ class JobLogView(VerticalScroll):
 
     def action_close_log(self) -> None:
         self.hide()
-        # Restore focus to the pipeline stages view
+        # Restore focus to the previously focused job widget
+        try:
+            content = self.screen.query_one(MRPipelineTabContent)
+            last = content._last_focused_job
+            if last is not None and last.is_mounted:
+                last.focus()
+                return
+        except Exception:
+            pass
+        # Fallback: focus first job
         try:
             stages = self.screen.query_one(PipelineStagesView)
-            for job_widget in stages.query(PipelineJobWidget):
-                job_widget.focus()
-                return
+            first_job = stages.query(PipelineJobWidget).first()
+            first_job.focus()
         except Exception:
             pass
 
@@ -246,6 +254,8 @@ class MRPipelineTabContent(Vertical):
         self._stages_view = PipelineStagesView(id="pipeline-stages-view")
         self._log_view = JobLogView()
         self._current_log_job: PipelineJob | None = None
+        self._focused_job_pos: tuple[int, int] | None = None
+        self._last_focused_job: PipelineJobWidget | None = None
 
     def compose(self) -> ComposeResult:
         yield self._header
@@ -270,7 +280,7 @@ class MRPipelineTabContent(Vertical):
                 return
             self._log_view.show_log(job, trace)
         except Exception:
-            ll.exception(f"Failed to load trace for job {job.name}")
+            ll.exception("Failed to load trace for job %s", job.name)
             if self.is_mounted:
                 self._log_view.show_log(job, f"Error loading log for {job.name}")
 
@@ -297,26 +307,41 @@ class MRPipelineTabContent(Vertical):
     def show_empty(self) -> None:
         self._header.update(Content.from_markup("[dim]No pipeline found for this merge request[/]"))
 
+    def _build_job_grid(self) -> list[list[PipelineJobWidget]]:
+        """Build a grid of job widgets indexed by [stage][job]."""
+        return [
+            list(card.query(PipelineJobWidget))
+            for card in self._stages_view.query(PipelineStageCard)
+        ]
+
+    def _update_focused_pos(self, widget: PipelineJobWidget) -> None:
+        """Update cached position when a job widget receives focus."""
+        grid = self._build_job_grid()
+        for si, jobs in enumerate(grid):
+            for ji, job_widget in enumerate(jobs):
+                if job_widget is widget:
+                    self._focused_job_pos = (si, ji)
+                    return
+
+    def on_descendant_focus(self, event) -> None:
+        if isinstance(event.widget, PipelineJobWidget):
+            self._last_focused_job = event.widget
+            self._update_focused_pos(event.widget)
+
     def _get_focused_job_position(self) -> tuple[int, int] | None:
-        """Return (stage_index, job_index) of the focused PipelineJobWidget, or None."""
+        """Return cached (stage_index, job_index) of the focused PipelineJobWidget."""
         focused = self.screen.focused
         if not isinstance(focused, PipelineJobWidget):
             return None
-        stage_cards = list(self._stages_view.query(PipelineStageCard))
-        for si, card in enumerate(stage_cards):
-            jobs = list(card.query(PipelineJobWidget))
-            for ji, job_widget in enumerate(jobs):
-                if job_widget is focused:
-                    return si, ji
-        return None
+        return self._focused_job_pos
 
     def _focus_job_at(self, stage_idx: int, job_idx: int) -> None:
         """Focus the job widget at the given stage and job indices (clamped)."""
-        stage_cards = list(self._stages_view.query(PipelineStageCard))
-        if not stage_cards:
+        grid = self._build_job_grid()
+        if not grid:
             return
-        stage_idx = max(0, min(stage_idx, len(stage_cards) - 1))
-        jobs = list(stage_cards[stage_idx].query(PipelineJobWidget))
+        stage_idx = max(0, min(stage_idx, len(grid) - 1))
+        jobs = grid[stage_idx]
         if not jobs:
             return
         job_idx = max(0, min(job_idx, len(jobs) - 1))

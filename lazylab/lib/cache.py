@@ -41,11 +41,11 @@ def load_models_from_cache(
         cached_objects = json.loads(path.read_text())
         return [expect_type(**raw_obj) for raw_obj in cached_objects]
     except json.JSONDecodeError as e:
-        ll.warning(f"Failed to parse cache file '{path}' as JSON: {e}")
+        ll.warning("Failed to parse cache file '%s' as JSON: %s", path, e)
     except ValidationError as e:
-        ll.warning(f"Cache schema mismatch in '{path}' for {expect_type.__name__}: {e}")
+        ll.warning("Cache schema mismatch in '%s' for %s: %s", path, expect_type.__name__, e)
     except Exception as e:
-        ll.warning(f"Unexpected error loading cache from '{path}': {e}")
+        ll.warning("Unexpected error loading cache from '%s': %s", path, e)
 
     return []
 
@@ -126,26 +126,20 @@ class AsyncCache:
 
     @staticmethod
     def _serialize_value(data: Any) -> Any:
-        if data is None:
-            return None
-        if isinstance(data, str):
-            return data
         if isinstance(data, BaseModel):
-            return {"__pydantic__": type(data).__qualname__, "data": data.model_dump(mode="json")}
+            return data.model_dump(mode="json")
         if isinstance(data, list):
             return [AsyncCache._serialize_value(item) for item in data]
         return data
 
     @staticmethod
     def _deserialize_value(raw: Any, model: type[BaseModel] | None) -> Any:
-        if raw is None:
-            return None
-        if isinstance(raw, str):
+        if model is None or raw is None:
             return raw
-        if isinstance(raw, dict) and raw.get("__pydantic__") and model:
-            return model(**raw["data"])
-        if isinstance(raw, list) and model:
-            return [AsyncCache._deserialize_value(item, model) for item in raw]
+        if isinstance(raw, list):
+            return [model.model_validate(item) for item in raw]
+        if isinstance(raw, dict):
+            return model.model_validate(raw)
         return raw
 
     def _load_from_disk(self, key: str, model: type[BaseModel] | None) -> _CacheEntry | None:
@@ -157,7 +151,7 @@ class AsyncCache:
             data = self._deserialize_value(raw["data"], model)
             return _CacheEntry(data=data, created_at=raw["created_at"])
         except Exception as exc:
-            ll.debug(f"Disk cache load failed for '{key}': {exc}")
+            ll.debug("Disk cache load failed for '%s': %s", key, exc)
             return None
 
     def _save_to_disk(self, key: str, entry: _CacheEntry) -> None:
@@ -172,7 +166,7 @@ class AsyncCache:
             path.write_text(payload)
             os.chmod(path, 0o600)
         except Exception as exc:
-            ll.debug(f"Disk cache save failed for '{key}': {exc}")
+            ll.debug("Disk cache save failed for '%s': %s", key, exc)
 
     # -- core operations ----------------------------------------------------
 
@@ -189,7 +183,7 @@ class AsyncCache:
         for k in keys:
             del self._entries[k]
         if keys:
-            ll.debug(f"Invalidated {len(keys)} cache entries with prefix '{prefix}'")
+            ll.debug("Invalidated %d cache entries with prefix '%s'", len(keys), prefix)
 
     def invalidate_mr(self, project_id: int, mr_iid: int) -> None:
         """Invalidate all caches related to a specific merge request."""
@@ -204,7 +198,7 @@ class AsyncCache:
         count = len(self._entries)
         self._entries.clear()
         if count:
-            ll.debug(f"Invalidated all {count} cache entries")
+            ll.debug("Invalidated all %d cache entries", count)
 
     # -- background refresh -------------------------------------------------
 
@@ -221,11 +215,11 @@ class AsyncCache:
         try:
             result = await fn(**kwargs)
             self.put(key, result)
-            ll.debug(f"Background refresh done for '{key}'")
+            ll.debug("Background refresh done for '%s'", key)
             if self._on_refresh is not None:
                 self._on_refresh(namespace, key)
         except Exception as exc:
-            ll.debug(f"Background refresh failed for '{key}': {exc}")
+            ll.debug("Background refresh failed for '%s': %s", key, exc)
         finally:
             self._pending_refreshes.discard(key)
 
@@ -265,14 +259,14 @@ def cached(namespace: str, *, model: type[BaseModel] | None = None) -> Callable:
             entry = api_cache.get(key)
             if entry is not None:
                 if entry.is_stale(api_cache._ttl):
-                    ll.debug(f"Cache stale '{key}', scheduling refresh")
+                    ll.debug("Cache stale '%s', scheduling refresh", key)
                     asyncio.create_task(
                         api_cache._background_refresh(
                             namespace, key, original_fn, arguments
                         )
                     )
                 else:
-                    ll.debug(f"Cache hit '{key}'")
+                    ll.debug("Cache hit '%s'", key)
                 return entry.data  # type: ignore[return-value]
 
             # 2. Disk hit
@@ -280,18 +274,18 @@ def cached(namespace: str, *, model: type[BaseModel] | None = None) -> Callable:
             if disk_entry is not None:
                 api_cache._entries[key] = disk_entry
                 if disk_entry.is_stale(api_cache._ttl):
-                    ll.debug(f"Disk cache stale '{key}', scheduling refresh")
+                    ll.debug("Disk cache stale '%s', scheduling refresh", key)
                     asyncio.create_task(
                         api_cache._background_refresh(
                             namespace, key, original_fn, arguments
                         )
                     )
                 else:
-                    ll.debug(f"Disk cache hit '{key}'")
+                    ll.debug("Disk cache hit '%s'", key)
                 return disk_entry.data  # type: ignore[return-value]
 
             # 3. Cache miss — fetch from API
-            ll.debug(f"Cache miss '{key}'")
+            ll.debug("Cache miss '%s'", key)
             result = await original_fn(*args, **kwargs)
             api_cache.put(key, result)
             return result

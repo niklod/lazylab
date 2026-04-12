@@ -35,7 +35,7 @@ def _to_pipeline_job(gl_job: Any) -> PipelineJob:
 @cached("pipeline_latest", model=Pipeline)
 async def get_latest_pipeline_for_mr(project_id: int, mr_iid: int) -> Pipeline | None:
     """Get the latest pipeline associated with a merge request."""
-    ll.debug(f"Getting latest pipeline for MR !{mr_iid} in project {project_id}")
+    ll.debug("Getting latest pipeline for MR !%s in project %s", mr_iid, project_id)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)
@@ -55,7 +55,7 @@ async def get_latest_pipeline_for_mr(project_id: int, mr_iid: int) -> Pipeline |
 @cached("pipeline_detail", model=PipelineDetail)
 async def get_pipeline_detail(project_id: int, mr_iid: int) -> PipelineDetail | None:
     """Get the latest pipeline with all jobs for a merge request."""
-    ll.debug(f"Getting pipeline detail for MR !{mr_iid} in project {project_id}")
+    ll.debug("Getting pipeline detail for MR !%s in project %s", mr_iid, project_id)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)
@@ -82,7 +82,7 @@ async def get_pipeline_detail(project_id: int, mr_iid: int) -> PipelineDetail | 
 @cached("job_trace")
 async def get_job_trace(project_id: int, job_id: int) -> str:
     """Get the log output (trace) of a pipeline job."""
-    ll.debug(f"Getting trace for job {job_id} in project {project_id}")
+    ll.debug("Getting trace for job %s in project %s", job_id, project_id)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)

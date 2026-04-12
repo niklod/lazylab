@@ -35,6 +35,9 @@ class GitLabClient:
         self._user_lock = asyncio.Lock()
         # Serialize all python-gitlab calls — requests.Session is not thread-safe
         self._limiter = CapacityLimiter(1)
+        # Cache raw python-gitlab project objects to avoid redundant HTTP round-trips
+        self._raw_project_cache: dict[int | str, Any] = {}
+        self._raw_project_lock = asyncio.Lock()
 
     async def _run_sync(self, fn: Callable[..., T], *args: Any) -> T:
         return await to_thread.run_sync(lambda: fn(*args), limiter=self._limiter)
@@ -57,8 +60,19 @@ class GitLabClient:
         return self._user
 
     async def get_raw_project(self, project_id: int | str) -> Any:
-        """Get raw python-gitlab project object for internal use."""
-        return await self._run_sync(self._gl.projects.get, project_id)
+        """Get raw python-gitlab project object for internal use (cached)."""
+        if project_id in self._raw_project_cache:
+            return self._raw_project_cache[project_id]
+        async with self._raw_project_lock:
+            if project_id in self._raw_project_cache:
+                return self._raw_project_cache[project_id]
+            proj = await self._run_sync(self._gl.projects.get, project_id)
+            self._raw_project_cache[project_id] = proj
+            return proj
+
+    def invalidate_raw_project(self, project_id: int | str) -> None:
+        """Remove a cached raw project (call after mutations like close/merge)."""
+        self._raw_project_cache.pop(project_id, None)
 
     async def list_projects(
         self,
@@ -67,7 +81,7 @@ class GitLabClient:
         order_by: str = "last_activity_at",
         sort: str = "desc",
     ) -> list[Project]:
-        ll.debug(f"Listing projects (membership={membership}, order_by={order_by})")
+        ll.debug("Listing projects (membership=%s, order_by=%s)", membership, order_by)
 
         def _fetch() -> Any:
             return self._gl.projects.list(
@@ -82,11 +96,11 @@ class GitLabClient:
         return [_to_project(p) for p in gl_projects]
 
     async def get_project(self, project_id: int) -> Project:
-        ll.debug(f"Getting project {project_id}")
+        ll.debug("Getting project %s", project_id)
         gl_project = await self.get_raw_project(project_id)
         return _to_project(gl_project)
 
     async def get_project_by_path(self, path: str) -> Project:
-        ll.debug(f"Getting project by path: {path}")
+        ll.debug("Getting project by path: %s", path)
         gl_project = await self.get_raw_project(path)
         return _to_project(gl_project)
