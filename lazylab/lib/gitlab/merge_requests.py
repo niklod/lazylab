@@ -1,5 +1,6 @@
 from typing import Any
 
+from lazylab.lib.cache import api_cache, cached
 from lazylab.lib.context import LazyLabContext
 from lazylab.lib.logging import ll
 from lazylab.models.gitlab import ApprovalStatus, MergeRequest, MRDiffData, MRDiffFile, User
@@ -36,6 +37,7 @@ def _mr_to_model(mr: Any, project_path: str) -> MergeRequest:
     )
 
 
+@cached("mr_list", model=MergeRequest)
 async def list_merge_requests(
     project_id: int,
     project_path: str,
@@ -60,6 +62,7 @@ async def list_merge_requests(
     return [_mr_to_model(mr, project_path) for mr in gl_mrs]
 
 
+@cached("mr", model=MergeRequest)
 async def get_merge_request(project_id: int, mr_iid: int, project_path: str) -> MergeRequest:
     ll.debug(f"Getting MR !{mr_iid} for project {project_id}")
     client = LazyLabContext.client
@@ -73,6 +76,7 @@ async def get_merge_request(project_id: int, mr_iid: int, project_path: str) -> 
     return _mr_to_model(gl_mr, project_path)
 
 
+@cached("mr_changes", model=MRDiffData)
 async def get_mr_changes(project_id: int, mr_iid: int) -> MRDiffData:
     ll.debug(f"Getting changes for MR !{mr_iid} in project {project_id}")
     client = LazyLabContext.client
@@ -98,6 +102,49 @@ async def get_mr_changes(project_id: int, mr_iid: int) -> MRDiffData:
     return MRDiffData(files=files)
 
 
+async def close_merge_request(project_id: int, mr_iid: int, project_path: str) -> MergeRequest:
+    ll.debug(f"Closing MR !{mr_iid} for project {project_id}")
+    client = LazyLabContext.client
+
+    gl_project = await client.get_raw_project(project_id)
+
+    def _fetch() -> Any:
+        mr = gl_project.mergerequests.get(mr_iid)
+        mr.state_event = "close"
+        mr.save()
+        return mr
+
+    gl_mr = await client._run_sync(_fetch)
+    api_cache.invalidate_mr(project_id, mr_iid)
+    return _mr_to_model(gl_mr, project_path)
+
+
+async def merge_merge_request(
+    project_id: int,
+    mr_iid: int,
+    project_path: str,
+    should_remove_source_branch: bool = False,
+    merge_when_pipeline_succeeds: bool = False,
+) -> MergeRequest:
+    ll.debug(f"Merging MR !{mr_iid} for project {project_id}")
+    client = LazyLabContext.client
+
+    gl_project = await client.get_raw_project(project_id)
+
+    def _fetch() -> Any:
+        mr = gl_project.mergerequests.get(mr_iid)
+        mr.merge(
+            should_remove_source_branch=should_remove_source_branch,
+            merge_when_pipeline_succeeds=merge_when_pipeline_succeeds,
+        )
+        return gl_project.mergerequests.get(mr_iid)
+
+    gl_mr = await client._run_sync(_fetch)
+    api_cache.invalidate_mr(project_id, mr_iid)
+    return _mr_to_model(gl_mr, project_path)
+
+
+@cached("mr_approvals", model=ApprovalStatus)
 async def get_mr_approvals(project_id: int, mr_iid: int) -> ApprovalStatus:
     ll.debug(f"Getting approvals for MR !{mr_iid}")
     client = LazyLabContext.client

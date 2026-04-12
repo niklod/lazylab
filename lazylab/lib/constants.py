@@ -47,3 +47,18 @@ class PipelineStatus(StrEnum):
     SKIPPED = "skipped"
     MANUAL = "manual"
     SCHEDULED = "scheduled"
+
+
+PIPELINE_JOB_STATUS_ICONS: dict[PipelineStatus, str] = {
+    PipelineStatus.SUCCESS: "[green]\u2713[/]",
+    PipelineStatus.FAILED: "[red]\u2718[/]",
+    PipelineStatus.RUNNING: "[yellow]\u25b6[/]",
+    PipelineStatus.PENDING: "[yellow]\u25cb[/]",
+    PipelineStatus.CREATED: "[dim]\u25cb[/]",
+    PipelineStatus.WAITING_FOR_RESOURCE: "[yellow]\u25cb[/]",
+    PipelineStatus.PREPARING: "[yellow]\u25cb[/]",
+    PipelineStatus.CANCELED: "[dim]\u2718[/]",
+    PipelineStatus.SKIPPED: "[dim]\u2298[/]",
+    PipelineStatus.MANUAL: "[cyan]\u25b6[/]",
+    PipelineStatus.SCHEDULED: "[cyan]\u23f2[/]",
+}

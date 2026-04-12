@@ -36,8 +36,28 @@ class LazyLabBindings:
     DIFF_SCROLL_DOWN = Binding("ctrl+d", "diff_scroll_down", "Scroll Down", id="diff.scroll_down", show=False)
     DIFF_SCROLL_UP = Binding("ctrl+u", "diff_scroll_up", "Scroll Up", id="diff.scroll_up", show=False)
 
+    # Open in browser
+    OPEN_IN_BROWSER = Binding("o", "open_in_browser", "Open URL", id="common.open_browser")
+
+    # Pipeline navigation
+    PIPELINE_PREV_STAGE = Binding("h", "prev_stage", "Prev Stage", id="pipeline.prev_stage", show=False)
+    PIPELINE_NEXT_STAGE = Binding("l", "next_stage", "Next Stage", id="pipeline.next_stage", show=False)
+    PIPELINE_PREV_JOB = Binding("k", "prev_job", "Prev Job", id="pipeline.prev_job", show=False)
+    PIPELINE_NEXT_JOB = Binding("j", "next_job", "Next Job", id="pipeline.next_job", show=False)
+
+    # Pipeline job log
+    CLOSE_LOG = Binding("escape", "close_log", "Close Log", id="pipeline.close_log", show=False)
+    LOG_SCROLL_DOWN_LINE = Binding("j", "log_scroll_down_line", show=False)
+    LOG_SCROLL_UP_LINE = Binding("k", "log_scroll_up_line", show=False)
+    LOG_SCROLL_TOP = Binding("g", "log_scroll_top", "Top", id="pipeline.log.top", show=False)
+    LOG_SCROLL_BOTTOM = Binding("G", "log_scroll_bottom", "Bottom", id="pipeline.log.bottom", show=False)
+
+    # Force refresh
+    FORCE_REFRESH = Binding("R", "force_refresh", "Refresh", id="common.force_refresh")
+
     # MR actions
-    # (Phase 8: CREATE_MR, CLOSE_MR, MERGE_MR)
+    CLOSE_MR = Binding("x", "close_mr", "Close MR", id="mr.close")
+    MERGE_MR = Binding("M", "merge_mr", "Merge MR", id="mr.merge")
 
     @classmethod
     def all(cls) -> list[Binding]:

@@ -12,7 +12,7 @@ from textual.widgets import TabbedContent
 from lazylab.lib.bindings import LazyLabBindings
 from lazylab.lib.context import LazyLabContext
 from lazylab.lib.logging import ll
-from lazylab.lib.messages import MRSelected, RepoSelected
+from lazylab.lib.messages import MRActionCompleted, MRSelected, RepoSelected
 from lazylab.models.gitlab import MergeRequest, Project
 from lazylab.ui.widgets.common import LazyLabContainer, LazyLabFooter
 from lazylab.ui.widgets.info import LazyLabInfoTabPane
@@ -233,6 +233,11 @@ class MainViewPane(Container):
 
 
 class LazyLabMainScreen(Screen):
+    BINDINGS = [
+        LazyLabBindings.CLOSE_MR,
+        LazyLabBindings.MERGE_MR,
+    ]
+
     def compose(self) -> ComposeResult:
         with Container():
             yield LazyLabStatusBar()
@@ -262,3 +267,26 @@ class LazyLabMainScreen(Screen):
     @on(MRSelected)
     async def handle_mr_selection(self, message: MRSelected) -> None:
         await self.main_view_pane.load_mr_details(message.mr)
+
+    @on(MRActionCompleted)
+    async def handle_mr_action_completed(self, message: MRActionCompleted) -> None:
+        await self.main_view_pane.load_mr_details(message.mr)
+
+    def handle_cache_refresh(self, namespace: str, key: str) -> None:
+        """Dispatch a cache refresh notification to the relevant active widget."""
+        try:
+            overview = self.query_one(MROverviewTabPane)
+            overview.handle_cache_refresh(namespace, key)
+        except NoMatches:
+            pass
+        try:
+            pipeline_tab = self.query_one(MRPipelineTabPane)
+            pipeline_tab.handle_cache_refresh(namespace, key)
+        except NoMatches:
+            pass
+
+    async def action_close_mr(self) -> None:
+        await self.main_view_pane.selections.merge_requests.action_close_mr()
+
+    async def action_merge_mr(self) -> None:
+        await self.main_view_pane.selections.merge_requests.action_merge_mr()

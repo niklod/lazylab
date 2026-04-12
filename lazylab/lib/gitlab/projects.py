@@ -1,7 +1,9 @@
+from lazylab.lib.cache import cached
 from lazylab.lib.context import LazyLabContext
 from lazylab.models.gitlab import Project
 
 
+@cached("projects", model=Project)
 async def list_projects(
     membership: bool = True,
     archived: bool = False,
@@ -16,9 +18,11 @@ async def list_projects(
     )
 
 
+@cached("project", model=Project)
 async def get_project(project_id: int) -> Project:
     return await LazyLabContext.client.get_project(project_id)
 
 
+@cached("project_path", model=Project)
 async def get_project_by_path(path: str) -> Project:
     return await LazyLabContext.client.get_project_by_path(path)

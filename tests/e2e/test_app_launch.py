@@ -50,7 +50,10 @@ def _mock_config(tmp_path):
 
     from lazylab.lib.config import Config
 
-    cfg = Config(gitlab={"url": "https://gitlab.com", "token": "fake-token"})  # type: ignore[arg-type]
+    cfg = Config(
+        gitlab={"url": "https://gitlab.com", "token": "fake-token"},  # type: ignore[arg-type]
+        cache={"directory": str(tmp_path / ".cache"), "ttl": 600},
+    )
     cfg.save()
     Config.reset()
 
