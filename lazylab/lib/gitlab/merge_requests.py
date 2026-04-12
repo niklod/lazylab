@@ -45,7 +45,7 @@ async def list_merge_requests(
     author_id: int | None = None,
     reviewer_id: int | None = None,
 ) -> list[MergeRequest]:
-    ll.debug(f"Listing MRs for project {project_id} (state={state})")
+    ll.debug("Listing MRs for project %s (state=%s)", project_id, state)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)
@@ -64,7 +64,7 @@ async def list_merge_requests(
 
 @cached("mr", model=MergeRequest)
 async def get_merge_request(project_id: int, mr_iid: int, project_path: str) -> MergeRequest:
-    ll.debug(f"Getting MR !{mr_iid} for project {project_id}")
+    ll.debug("Getting MR !%s for project %s", mr_iid, project_id)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)
@@ -78,7 +78,7 @@ async def get_merge_request(project_id: int, mr_iid: int, project_path: str) -> 
 
 @cached("mr_changes", model=MRDiffData)
 async def get_mr_changes(project_id: int, mr_iid: int) -> MRDiffData:
-    ll.debug(f"Getting changes for MR !{mr_iid} in project {project_id}")
+    ll.debug("Getting changes for MR !%s in project %s", mr_iid, project_id)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)
@@ -103,7 +103,7 @@ async def get_mr_changes(project_id: int, mr_iid: int) -> MRDiffData:
 
 
 async def close_merge_request(project_id: int, mr_iid: int, project_path: str) -> MergeRequest:
-    ll.debug(f"Closing MR !{mr_iid} for project {project_id}")
+    ll.debug("Closing MR !%s for project %s", mr_iid, project_id)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)
@@ -126,7 +126,7 @@ async def merge_merge_request(
     should_remove_source_branch: bool = False,
     merge_when_pipeline_succeeds: bool = False,
 ) -> MergeRequest:
-    ll.debug(f"Merging MR !{mr_iid} for project {project_id}")
+    ll.debug("Merging MR !%s for project %s", mr_iid, project_id)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)
@@ -146,7 +146,7 @@ async def merge_merge_request(
 
 @cached("mr_approvals", model=ApprovalStatus)
 async def get_mr_approvals(project_id: int, mr_iid: int) -> ApprovalStatus:
-    ll.debug(f"Getting approvals for MR !{mr_iid}")
+    ll.debug("Getting approvals for MR !%s", mr_iid)
     client = LazyLabContext.client
 
     gl_project = await client.get_raw_project(project_id)

@@ -108,7 +108,7 @@ class SearchableDataTable(Vertical, Generic[T]):
 
         cache_dir = LazyLabContext.config.cache.directory
         cache_project = project_path if self.project_based_cache else None
-        ll.debug(f"Loading '{expect_type.__name__}' from '{self.cache_name}' cache")
+        ll.debug("Loading '%s' from '%s' cache", expect_type.__name__, self.cache_name)
         cached_models = load_models_from_cache(cache_dir, cache_project, self.cache_name, expect_type)
         self.add_items(cached_models, write_to_cache=False)
 
@@ -154,9 +154,10 @@ class SearchableDataTable(Vertical, Generic[T]):
         self.table.clear()
         self.items = {}
         for key, item in self._all_items.items():
-            if not search_query or search_query in str(self.item_to_row(item)).lower():
+            row = self.item_to_row(item)
+            if not search_query or search_query in str(row).lower():
                 self.items[key] = item
-                self.table.add_row(*self.item_to_row(item), key=key)
+                self.table.add_row(*row, key=key)
         self.sort_table()
 
     @on(Input.Submitted)

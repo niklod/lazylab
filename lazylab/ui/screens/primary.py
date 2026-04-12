@@ -89,11 +89,11 @@ class SelectionDetailsContainer(LazyLabContainer):
         if not pane_ids:
             return
         current = self.tabs.active
-        if current in pane_ids:
-            idx = (pane_ids.index(current) + direction) % len(pane_ids)
-        else:
+        try:
+            idx = pane_ids.index(current)
+        except ValueError:
             idx = 0
-        target = pane_ids[idx]
+        target = pane_ids[(idx + direction) % len(pane_ids)]
         self.tabs.active = target
         self._focus_active_pane(target)
 
