@@ -75,6 +75,11 @@ class MergeRequest(BaseModel):
     project_path: str = ""
 
 
+class DiscussionStats(BaseModel):
+    total_resolvable: int = 0
+    resolved: int = 0
+
+
 class MRDiffFile(BaseModel):
     old_path: str
     new_path: str

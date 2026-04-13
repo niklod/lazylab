@@ -190,6 +190,7 @@ class AsyncCache:
         self.invalidate(f"mr_list:{project_id}:")
         self.invalidate(f"mr:{project_id}:{mr_iid}")
         self.invalidate(f"mr_approvals:{project_id}:{mr_iid}")
+        self.invalidate(f"mr_discussions:{project_id}:{mr_iid}")
         self.invalidate(f"mr_changes:{project_id}:{mr_iid}")
         self.invalidate(f"pipeline_latest:{project_id}:{mr_iid}")
         self.invalidate(f"pipeline_detail:{project_id}:{mr_iid}")

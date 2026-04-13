@@ -15,7 +15,7 @@ from lazylab.lib.constants import MROwnerFilter, MRState, PipelineStatus
 from lazylab.lib.context import LazyLabContext
 from lazylab.lib.logging import ll
 from lazylab.lib.messages import MRActionCompleted, MRSelected
-from lazylab.models.gitlab import ApprovalStatus, MergeRequest, Project
+from lazylab.models.gitlab import ApprovalStatus, DiscussionStats, MergeRequest, Project
 from lazylab.ui.screens.mr_actions import CloseMRScreen, MergeMRScreen, MergeResult
 from lazylab.ui.widgets.common import LazyLabContainer, SearchableDataTable, TableRow
 from lazylab.ui.widgets.mr_diff import MRDiffTabContent
@@ -230,6 +230,17 @@ def _conflict_text(has_conflicts: bool) -> str:
     return "[green]No conflicts[/]"
 
 
+def _comments_text(notes_count: int, stats: DiscussionStats) -> str:
+    if stats.total_resolvable == 0:
+        return f"{notes_count}"
+    resolved_part = (
+        f"[green]{stats.resolved}/{stats.total_resolvable} resolved[/]"
+        if stats.resolved == stats.total_resolvable
+        else f"[yellow]{stats.resolved}/{stats.total_resolvable} resolved[/]"
+    )
+    return f"{notes_count} ({resolved_part})"
+
+
 def _approval_text(approval: ApprovalStatus | None) -> str:
     if approval is None:
         return "[dim]Loading...[/]"
@@ -258,10 +269,12 @@ class MROverviewTabPane(TabPane):
 
     approval_text: reactive[str] = reactive("[dim]Loading...[/]")
     pipeline_text: reactive[str] = reactive("[dim]Loading...[/]")
+    comments_text: reactive[str] = reactive("")
 
     def __init__(self, mr: MergeRequest) -> None:
         super().__init__("Overview", id="mr-overview-tab")
         self.mr = mr
+        self.comments_text = f"{self.mr.user_notes_count}"
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
@@ -272,7 +285,7 @@ class MROverviewTabPane(TabPane):
             yield Label(f"Branches: {self.mr.source_branch} \u2192 {self.mr.target_branch}")
             yield Label("")
             yield Static(Content.from_markup(f"Conflicts: {_conflict_text(self.mr.has_conflicts)}"))
-            yield Label(f"Comments: {self.mr.user_notes_count}")
+            yield Static(id="comments-status", classes="overview-section")
             yield Label("")
             yield Static(id="approval-status", classes="overview-section")
             yield Static(id="pipeline-status", classes="overview-section")
@@ -284,10 +297,15 @@ class MROverviewTabPane(TabPane):
             pass
 
     def on_mount(self) -> None:
+        self._update_status_label("comments-status", "Comments", self.comments_text)
         self._update_status_label("approval-status", "Approvals", self.approval_text)
         self._update_status_label("pipeline-status", "Pipeline", self.pipeline_text)
+        self._load_discussion_stats()
         self._load_approval()
         self._load_pipeline()
+
+    def watch_comments_text(self, value: str) -> None:
+        self._update_status_label("comments-status", "Comments", value)
 
     def watch_approval_text(self, value: str) -> None:
         self._update_status_label("approval-status", "Approvals", value)
@@ -308,6 +326,19 @@ class MROverviewTabPane(TabPane):
             self._load_approval()
         elif namespace == "pipeline_latest" and self._matches_current_mr(key):
             self._load_pipeline()
+        elif namespace == "mr_discussions" and self._matches_current_mr(key):
+            self._load_discussion_stats()
+
+    @work
+    async def _load_discussion_stats(self) -> None:
+        project = LazyLabContext.current_project
+        if not project:
+            return
+        try:
+            stats = await mr_api.get_mr_discussion_stats(project.id, self.mr.iid)
+            self.comments_text = _comments_text(self.mr.user_notes_count, stats)
+        except Exception:
+            ll.exception("Failed to load discussion stats")
 
     @work
     async def _load_approval(self) -> None:

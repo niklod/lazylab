@@ -116,6 +116,7 @@ class TestAsyncCacheCore:
         self.cache.put("mr_list:10:group/test:opened", [SAMPLE_MR])
         self.cache.put("mr:10:5:group/test", SAMPLE_MR)
         self.cache.put("mr_approvals:10:5", "approved")
+        self.cache.put("mr_discussions:10:5", "stats")
         self.cache.put("mr_changes:10:5", "diff")
         self.cache.put("pipeline_latest:10:5", SAMPLE_PIPELINE)
         self.cache.put("pipeline_detail:10:5", None)
@@ -127,6 +128,7 @@ class TestAsyncCacheCore:
         assert self.cache.get("mr_list:10:group/test:opened") is None
         assert self.cache.get("mr:10:5:group/test") is None
         assert self.cache.get("mr_approvals:10:5") is None
+        assert self.cache.get("mr_discussions:10:5") is None
         assert self.cache.get("mr_changes:10:5") is None
         assert self.cache.get("pipeline_latest:10:5") is None
         assert self.cache.get("pipeline_detail:10:5") is None

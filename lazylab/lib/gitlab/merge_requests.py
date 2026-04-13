@@ -3,7 +3,14 @@ from typing import Any
 from lazylab.lib.cache import api_cache, cached
 from lazylab.lib.context import LazyLabContext
 from lazylab.lib.logging import ll
-from lazylab.models.gitlab import ApprovalStatus, MergeRequest, MRDiffData, MRDiffFile, User
+from lazylab.models.gitlab import (
+    ApprovalStatus,
+    DiscussionStats,
+    MergeRequest,
+    MRDiffData,
+    MRDiffFile,
+    User,
+)
 
 
 def _user_from_dict(data: dict[str, Any]) -> User:
@@ -142,6 +149,35 @@ async def merge_merge_request(
     gl_mr = await client._run_sync(_fetch)
     api_cache.invalidate_mr(project_id, mr_iid)
     return _mr_to_model(gl_mr, project_path)
+
+
+@cached("mr_discussions", model=DiscussionStats)
+async def get_mr_discussion_stats(project_id: int, mr_iid: int) -> DiscussionStats:
+    ll.debug("Getting discussion stats for MR !%s", mr_iid)
+    client = LazyLabContext.client
+
+    gl_project = await client.get_raw_project(project_id)
+
+    def _fetch() -> Any:
+        mr = gl_project.mergerequests.get(mr_iid)
+        return mr.discussions.list(get_all=True)
+
+    discussions = await client._run_sync(_fetch)
+
+    total_resolvable = 0
+    resolved = 0
+    for disc in discussions:
+        notes = disc.attributes.get("notes", [])
+        if not notes:
+            continue
+        first_note = notes[0]
+        if not first_note.get("resolvable", False):
+            continue
+        total_resolvable += 1
+        if all(n.get("resolved", False) for n in notes if n.get("resolvable", False)):
+            resolved += 1
+
+    return DiscussionStats(total_resolvable=total_resolvable, resolved=resolved)
 
 
 @cached("mr_approvals", model=ApprovalStatus)
