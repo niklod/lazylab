@@ -118,8 +118,13 @@ func (v *Views) diffTreeBindings() []keymap.Binding {
 		{View: keymap.ViewDetailDiffTree, Key: 'g', Handler: v.diffTreeMoveToStart},
 		{View: keymap.ViewDetailDiffTree, Key: 'G', Handler: v.diffTreeMoveToEnd},
 		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyEnter, Handler: v.diffTreeSelect},
-		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyCtrlD, Handler: v.diffTreeHalfPage(+1)},
-		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyCtrlU, Handler: v.diffTreeHalfPage(-1)},
+		// Ctrl+D / Ctrl+U on the tree pane scroll the diff CONTENT, not the
+		// tree cursor. Users reach for these to read a long diff; rebinding
+		// them to tree-cursor motion was a usability bug — tree navigation
+		// already has j/k + g/G, and the content pane is where half-page
+		// movement pays off.
+		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyCtrlD, Handler: v.diffContentHalfPage(+1)},
+		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyCtrlU, Handler: v.diffContentHalfPage(-1)},
 	}
 }
 
@@ -196,27 +201,10 @@ func (v *Views) diffTreeSelect(g *gocui.Gui, _ *gocui.View) error {
 	return nil
 }
 
-func (v *Views) diffTreeHalfPage(direction int) keymap.HandlerFunc {
-	return func(g *gocui.Gui, pv *gocui.View) error {
-		if v.Detail == nil || v.Detail.DiffTree() == nil || pv == nil {
-			return nil
-		}
-		_, innerH := pv.InnerSize()
-		step := innerH / 2
-		if step <= 0 {
-			step = 1
-		}
-		if v.Detail.DiffTree().MoveCursor(direction * step) {
-			v.pushDiffSelection(g)
-		}
-
-		return nil
-	}
-}
-
 func (v *Views) diffContentScroll(delta int) keymap.HandlerFunc {
-	return func(_ *gocui.Gui, pv *gocui.View) error {
-		if v.Detail == nil || v.Detail.DiffContent() == nil || pv == nil {
+	return func(g *gocui.Gui, _ *gocui.View) error {
+		pv := v.diffContentPane(g)
+		if pv == nil {
 			return nil
 		}
 		v.Detail.DiffContent().ScrollBy(pv, delta)
@@ -225,9 +213,15 @@ func (v *Views) diffContentScroll(delta int) keymap.HandlerFunc {
 	}
 }
 
+// diffContentHalfPage scrolls the diff CONTENT pane by half its visible
+// height. Works whether the handler fires from the tree or the content
+// pane — we look up ViewDetailDiffContent directly via g.View instead of
+// trusting the inbound `pv` (which would be the tree when Ctrl+D is hit
+// with focus on the file list).
 func (v *Views) diffContentHalfPage(direction int) keymap.HandlerFunc {
-	return func(_ *gocui.Gui, pv *gocui.View) error {
-		if v.Detail == nil || v.Detail.DiffContent() == nil || pv == nil {
+	return func(g *gocui.Gui, _ *gocui.View) error {
+		pv := v.diffContentPane(g)
+		if pv == nil {
 			return nil
 		}
 		_, innerH := pv.InnerSize()
@@ -239,6 +233,18 @@ func (v *Views) diffContentHalfPage(direction int) keymap.HandlerFunc {
 
 		return nil
 	}
+}
+
+func (v *Views) diffContentPane(g *gocui.Gui) *gocui.View {
+	if v.Detail == nil || v.Detail.DiffContent() == nil || g == nil {
+		return nil
+	}
+	pv, err := g.View(keymap.ViewDetailDiffContent)
+	if err != nil {
+		return nil
+	}
+
+	return pv
 }
 
 func (v *Views) pushDiffSelection(g *gocui.Gui) {

@@ -246,6 +246,37 @@ func (s *MRDiffSuite) TestDiffTab_AllTreeKeys_MoveCursor() {
 	s.Require().Equal(last, tree.Cursor(), "G jumps to last leaf")
 }
 
+func (s *MRDiffSuite) TestDiffTab_TreeCtrlDScrollsContent() {
+	s.loadAndSelectMR()
+
+	lines := make([]string, 80)
+	for i := range lines {
+		lines[i] = "+line" + fmt.Sprintf("%d", i)
+	}
+	s.v.Detail.DiffContent().SetFile(&models.MRDiffFile{Diff: strings.Join(lines, "\n")})
+	s.Require().NoError(s.layoutTick())
+
+	_, err := s.g.SetCurrentView(keymap.ViewDetailDiffTree)
+	s.Require().NoError(err)
+
+	content, err := s.g.View(keymap.ViewDetailDiffContent)
+	s.Require().NoError(err)
+	content.SetOrigin(0, 0)
+
+	tree := s.v.Detail.DiffTree()
+	cursorBefore := tree.Cursor()
+
+	s.Require().NoError(s.dispatch(keymap.ViewDetailDiffTree, gocui.KeyCtrlD))
+
+	_, oy := content.Origin()
+	s.Require().Greater(oy, 0, "ctrl+d on tree must scroll the diff content, not tree")
+	s.Require().Equal(cursorBefore, tree.Cursor(), "tree cursor must not move on ctrl+d")
+
+	s.Require().NoError(s.dispatch(keymap.ViewDetailDiffTree, gocui.KeyCtrlU))
+	_, oyAfterUp := content.Origin()
+	s.Require().Less(oyAfterUp, oy, "ctrl+u on tree must scroll content back up")
+}
+
 func (s *MRDiffSuite) TestDiffTab_AllContentKeys_ScrollOrigin() {
 	s.loadAndSelectMR()
 
