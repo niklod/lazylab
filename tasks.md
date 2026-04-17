@@ -106,3 +106,83 @@
   - [x] Unit tests for callback (3 tests: fires on refresh, not on hit, not on failure)
   - [ ] Command palette
   - [ ] Error handling improvements
+
+---
+
+## Go Rewrite
+
+Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationale, module mapping, and full phase plan.
+
+### Phase G1: Scaffold + Config + API Client
+- [ ] Create Go module, Makefile (`build`/`lint`/`test`/`test-e2e`), golangci-lint + goreleaser configs
+  - **DoD:** `make build` produces `gt` binary; `make lint` clean on empty package.
+  - **Testing:** `make build && ./bin/gt version` prints expected string; CI matrix green.
+- [ ] Implement `internal/config/` with yaml.v3 + adrg/xdg + dario.cat/mergo + afero
+  - **DoD:** loads `~/.config/gitlab-tui/config.yaml`, applies defaults via mergo, reads token from env.
+  - **Testing:** unit test with afero in-memory FS covering missing file, partial file, full file.
+- [ ] Implement `internal/context/AppContext`
+  - **DoD:** constructed in `cmd/gt/main.go`, carries config + gitlab client + current project, no globals.
+  - **Testing:** unit test asserts fields wired; no package-level singletons in `go vet`.
+- [ ] Pick and document (ADR) the Go GitLab client library; implement `internal/gitlab/client.go`
+  - **DoD:** thin wrapper with thread-safe client; e2e smoke hitting a fake HTTP server.
+  - **Testing:** unit test against `httptest.Server`; ADR committed in `docs/adr/`.
+- [ ] Implement `internal/models/` (User, Project, MergeRequest, Pipeline, ApprovalStatus)
+  - **DoD:** types mirror Python Pydantic fields; YAML/JSON round-trip tested.
+  - **Testing:** table-driven unit tests per type.
+- [ ] Implement `gt version` and `gt run` subcommands via flaggy
+  - **DoD:** both subcommands parse and exit with correct codes.
+  - **Testing:** unit test on flaggy registration; e2e runs both commands.
+- [ ] Port file-backed cache (ADR 006) to `internal/cache/`
+  - **DoD:** stale-while-revalidate identical semantics to Python; race-free under `-race`.
+  - **Testing:** unit tests covering get/put/invalidate/refresh; `sasha-s/go-deadlock` guard in tests.
+
+### Phase G2: Repositories Panel
+- [ ] 3-pane gocui layout + vim-style key bindings in `internal/tui/keys.go`
+  - **DoD:** `hjkl`, `g`, `G`, `/`, `[`, `]` registered; focus cycles correctly.
+  - **Testing:** e2e drives keys and asserts focused view name.
+- [ ] `views/repos.go` with searchable table + favourites
+  - **DoD:** renders projects, search filters in-place, favourite toggle persists.
+  - **Testing:** e2e mirrors Python `test_app_launch.py`.
+
+### Phase G3: Merge Requests List
+- [ ] `internal/gitlab/merge_requests.go`: List/Get/Approvals
+  - **DoD:** 1:1 feature parity with Python equivalents; errors wrapped with context.
+  - **Testing:** unit tests against `httptest.Server`.
+- [ ] `views/mrs.go` with status icons + filters (state, mine, reviewer)
+  - **DoD:** filter toggles change the table content.
+  - **Testing:** e2e toggles each filter and snapshots the table.
+
+### Phase G4: MR Detail Tabs
+- [ ] Overview tab
+  - **DoD:** author, date, state, branches, conflicts, comment count rendered.
+  - **Testing:** unit snapshot + e2e.
+- [ ] Diff tab (file tree + side-by-side viewer)
+  - **DoD:** file tree navigable, diff colored, ctrl+d/u scroll.
+  - **Testing:** unit tests for diff parsing; e2e for tree+diff rendering.
+- [ ] Conversation tab
+  - **DoD:** threaded discussions with resolve status.
+  - **Testing:** e2e for conversation rendering.
+- [ ] Pipeline tab + inline job logs
+  - **DoD:** stages as blocks, Enter opens log, Esc closes.
+  - **Testing:** e2e open/close log.
+
+### Phase G5: MR Actions
+- [ ] Close + merge actions with modal confirmation views
+  - **DoD:** state guards prevent closed→close; post-action refresh via cache invalidation.
+  - **Testing:** e2e for confirm/cancel on both actions.
+
+### Phase G6: Caching
+- [ ] Port async cache + stale-while-revalidate to goroutines
+  - **DoD:** concurrent calls deduplicated; background refresh fires `CacheRefreshed`.
+  - **Testing:** unit with `-race`; e2e asserts UI auto-update after refresh.
+
+### Phase G7: Polish + Cut-Over
+- [ ] Command palette, error handling improvements
+  - **DoD:** palette lists registered commands; errors surface as toasts, not crashes.
+  - **Testing:** e2e for palette invocation + error path.
+- [ ] GoReleaser config producing macOS/Linux binaries + Docker image
+  - **DoD:** `goreleaser release --snapshot --clean` succeeds locally.
+  - **Testing:** CI dry-run stage.
+- [ ] Cut-over: merge `go-rewrite` → `master`, delete Python tree, tag release
+  - **DoD:** full Python e2e scenarios pass against Go binary; no Python runtime required.
+  - **Testing:** green CI + tagged release artefact.
