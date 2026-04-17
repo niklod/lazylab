@@ -77,6 +77,10 @@ func (s *DetailOverviewSuite) SetupTest() {
 				{"id":"d1","notes":[{"id":1,"resolvable":true,"resolved":true}]},
 				{"id":"d2","notes":[{"id":2,"resolvable":true,"resolved":false}]}
 			]`)
+		case strings.Contains(r.URL.Path, "/diffs"):
+			_, _ = fmt.Fprint(w, `[
+				{"old_path":"a","new_path":"a","diff":"@@ -1 +1 @@\n-old\n+new\n"}
+			]`)
 		case strings.Contains(r.URL.Path, "/merge_requests"):
 			_, _ = fmt.Fprint(w, detailOpenedMRsFixture)
 		case strings.HasSuffix(r.URL.Path, "/user"):
@@ -206,6 +210,25 @@ func (s *DetailOverviewSuite) TestEnterOnSecondMR_ReplacesOverview() {
 	s.Require().Contains(buf, "\u2717 Has conflicts")
 	s.Require().Contains(buf, "Comments: 0")
 	s.Require().NotContains(buf, "Feature Alpha")
+}
+
+func (s *DetailOverviewSuite) TestOverview_RendersDiffStatsAfterPrefetch() {
+	s.loadProjectAndMRs()
+
+	project := s.v.Repos.SelectedProject()
+	s.Require().NotNil(project)
+	mr := s.v.MRs.SelectedMR()
+	s.Require().NotNil(mr)
+
+	s.Require().NoError(s.v.Detail.SetMRSync(context.Background(), project, mr))
+	s.Require().NoError(s.v.Detail.SetTabSync(context.Background(), views.DetailTabDiff, project))
+	s.v.Detail.SetTab(views.DetailTabOverview, nil)
+	s.Require().NoError(s.layoutTick())
+
+	buf := s.detailBuffer()
+	s.Require().Contains(buf, "Changes:")
+	s.Require().Contains(buf, "+1")
+	s.Require().Contains(buf, "-1")
 }
 
 func (s *DetailOverviewSuite) TestSetMRSync_RendersResolvedThreadCount() {

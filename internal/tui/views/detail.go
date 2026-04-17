@@ -96,6 +96,7 @@ type DetailView struct {
 	diffSeq     uint64
 	diffLoading bool
 	diffErr     error
+	diffStats   *models.DiffStats
 }
 
 func NewDetail(g *gocui.Gui, app *appcontext.AppContext) *DetailView {
@@ -127,21 +128,22 @@ func (d *DetailView) ConsumePendingFocus() string {
 // stats fetch. No fetch happens if project is nil or the view has no
 // GitLab client (tests that instantiate DetailView without an app skip it).
 func (d *DetailView) SetMR(project *models.Project, mr *models.MergeRequest) {
-	seq, projectID, iid, tab := d.commitMR(project, mr)
+	seq, projectID, iid := d.commitMR(project, mr)
 	if projectID == 0 || d.app == nil || d.app.GitLab == nil || d.g == nil {
 		return
 	}
 	go d.fetchStats(context.Background(), seq, projectID, iid)
-	if tab == DetailTabDiff {
-		d.fetchDiffAsync(context.Background(), project, mr)
-	}
+	// Always prefetch the diff — Overview shows a +N -M line derived from
+	// the same payload the Diff tab consumes, so the fetch doubles as the
+	// stats source. cache.Do dedupes when the user actually opens Diff.
+	d.fetchDiffAsync(context.Background(), project, mr)
 }
 
 // SetMRSync applies an MR and fetches stats inline. Test-only entry point
 // that mirrors MRsView.SetProjectSync so tests running without MainLoop
 // observe both fields deterministically.
 func (d *DetailView) SetMRSync(ctx context.Context, project *models.Project, mr *models.MergeRequest) error {
-	seq, projectID, iid, _ := d.commitMR(project, mr)
+	seq, projectID, iid := d.commitMR(project, mr)
 	if projectID == 0 || d.app == nil || d.app.GitLab == nil {
 		return nil
 	}
@@ -168,6 +170,15 @@ func (d *DetailView) Stats() *models.DiscussionStats {
 	defer d.mu.Unlock()
 
 	return d.stats
+}
+
+// DiffStatsSnapshot returns the most recent added/removed line counts, or
+// nil if the diff has not been fetched yet.
+func (d *DetailView) DiffStatsSnapshot() *models.DiffStats {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.diffStats
 }
 
 // CurrentTab returns the active tab. Callers should not rely on this for
@@ -296,7 +307,7 @@ func (d *DetailView) Render(pane *gocui.View) {
 	}
 }
 
-func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) (seq uint64, projectID, iid int, tab DetailTab) {
+func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) (seq uint64, projectID, iid int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -306,6 +317,7 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 	d.diffSeq++
 	d.diffLoading = false
 	d.diffErr = nil
+	d.diffStats = nil
 	if d.diffTree != nil {
 		d.diffTree.SetFiles(nil)
 	}
@@ -316,16 +328,16 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 	if mr == nil {
 		d.cached = ""
 
-		return d.statsSeq, 0, 0, d.currentTab
+		return d.statsSeq, 0, 0
 	}
-	d.cached = renderOverview(mr, nil)
+	d.cached = renderOverview(mr, nil, nil)
 
 	pid := 0
 	if project != nil {
 		pid = project.ID
 	}
 
-	return d.statsSeq, pid, mr.IID, d.currentTab
+	return d.statsSeq, pid, mr.IID
 }
 
 func (d *DetailView) fetchStats(ctx context.Context, seq uint64, projectID, iid int) {
@@ -348,7 +360,7 @@ func (d *DetailView) applyStats(seq uint64, stats *models.DiscussionStats, err e
 		return
 	}
 	d.stats = stats
-	d.cached = renderOverview(d.mr, stats)
+	d.cached = renderOverview(d.mr, stats, d.diffStats)
 }
 
 func (d *DetailView) beginDiffLoad() uint64 {
@@ -408,6 +420,11 @@ func (d *DetailView) applyDiff(seq uint64, data *models.MRDiffData, err error) {
 	if data != nil {
 		files = data.Files
 	}
+	stats := data.Stats()
+	d.diffStats = &stats
+	if d.mr != nil {
+		d.cached = renderOverview(d.mr, d.stats, d.diffStats)
+	}
 	if d.diffTree != nil {
 		d.diffTree.SetFiles(files)
 	}
@@ -452,7 +469,7 @@ func renderTabBar(active DetailTab) string {
 	return sb.String()
 }
 
-func renderOverview(mr *models.MergeRequest, stats *models.DiscussionStats) string {
+func renderOverview(mr *models.MergeRequest, stats *models.DiscussionStats, diffStats *models.DiffStats) string {
 	var sb strings.Builder
 	sb.Grow(256)
 
@@ -462,6 +479,7 @@ func renderOverview(mr *models.MergeRequest, stats *models.DiscussionStats) stri
 	fmt.Fprintf(&sb, "Status:   %s %s\n", mrStateLetter(mr.State), mr.State)
 	fmt.Fprintf(&sb, "Branches: %s%s%s\n", mr.SourceBranch, detailBranchesSep, mr.TargetBranch)
 	fmt.Fprintf(&sb, "Conflicts: %s\n", conflictText(mr.HasConflicts))
+	fmt.Fprintf(&sb, "Changes:  %s\n", diffStatsText(diffStats))
 	fmt.Fprintf(&sb, "Comments: %s\n", commentsText(mr.UserNotesCount, stats))
 
 	return sb.String()
@@ -493,4 +511,18 @@ func conflictText(hasConflicts bool) string {
 	}
 
 	return detailNoConflicts
+}
+
+// diffStatsText renders the "Changes:" overview line. Returns a dim
+// "loading…" hint while the fetch is in flight (stats == nil) and the
+// coloured `+N -M` pair once the diff has been counted.
+func diffStatsText(stats *models.DiffStats) string {
+	if stats == nil {
+		return ansiDim + "loading…" + ansiReset
+	}
+
+	return fmt.Sprintf("%s+%d%s %s-%d%s",
+		ansiGreen, stats.Added, ansiReset,
+		ansiRed, stats.Removed, ansiReset,
+	)
 }

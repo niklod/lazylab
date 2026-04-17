@@ -63,11 +63,15 @@ func (s *DetailViewSuite) buildAppWithHandler(handler http.HandlerFunc) {
 	cfg := config.Defaults()
 	cfg.GitLab.URL = s.srv.URL
 	cfg.GitLab.Token = testGitLabToken
-	client, err := gitlab.New(cfg.GitLab, gitlab.WithHTTPClient(s.srv.Client()))
-	s.Require().NoError(err)
 	fs := afero.NewMemMapFs()
 	s.Require().NoError(cfg.Save(fs, detailTestCfgPath))
-	s.app = appcontext.New(cfg, client, cache.New(cfg.Cache, fs), fs, detailTestCfgPath)
+	c := cache.New(cfg.Cache, fs)
+	client, err := gitlab.New(cfg.GitLab,
+		gitlab.WithHTTPClient(s.srv.Client()),
+		gitlab.WithCache(c),
+	)
+	s.Require().NoError(err)
+	s.app = appcontext.New(cfg, client, c, fs, detailTestCfgPath)
 
 	s.detail = NewDetail(s.g, s.app)
 }
@@ -341,14 +345,12 @@ func (s *DetailViewSuite) TestSetTab_ConversationAndPipelineShowStubs() {
 }
 
 func (s *DetailViewSuite) TestSetTabSync_FetchesDiffAndPopulatesTree() {
-	var hits atomic.Int32
 	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "/diffs") {
 			http.NotFound(w, r)
 
 			return
 		}
-		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `[
 			{"old_path":"src/a.go","new_path":"src/a.go","diff":"@@ -1 +1 @@\n-old\n+new\n"},
@@ -361,7 +363,6 @@ func (s *DetailViewSuite) TestSetTabSync_FetchesDiffAndPopulatesTree() {
 
 	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabDiff, project))
 
-	s.Require().Equal(int32(1), hits.Load())
 	s.Require().Equal(DetailTabDiff, s.detail.CurrentTab())
 
 	tree := s.detail.DiffTree()
@@ -484,6 +485,63 @@ func (s *DetailViewSuite) TestSetMR_Nil_ClearsDiffWidgets() {
 
 	s.Require().Equal(0, s.detail.DiffTree().RowCount())
 	s.Require().Nil(s.detail.DiffContent().CurrentFile())
+}
+
+func (s *DetailViewSuite) TestDiffStatsText_NilReturnsLoadingHint() {
+	got := diffStatsText(nil)
+
+	s.Require().Contains(got, "loading")
+	s.Require().Contains(got, ansiDim)
+	s.Require().Contains(got, ansiReset)
+}
+
+func (s *DetailViewSuite) TestDiffStatsText_RendersGreenPlusRedMinus() {
+	got := diffStatsText(&models.DiffStats{Added: 12, Removed: 3})
+
+	s.Require().Contains(got, ansiGreen+"+12"+ansiReset)
+	s.Require().Contains(got, ansiRed+"-3"+ansiReset)
+}
+
+func (s *DetailViewSuite) TestSetTabSync_PopulatesDiffStatsAndRendersInOverview() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/diffs") {
+			http.NotFound(w, r)
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[
+			{"old_path":"a","new_path":"a","diff":"@@ -1,2 +1,3 @@\n-x\n+y\n+z\n"}
+		]`)
+	})
+	mr := &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 1, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, mr)
+
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabDiff, project))
+
+	stats := s.detail.DiffStatsSnapshot()
+	s.Require().NotNil(stats)
+	s.Require().Equal(2, stats.Added)
+	s.Require().Equal(1, stats.Removed)
+
+	s.detail.SetTab(DetailTabOverview, nil)
+	s.detail.Render(s.pane())
+
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, "Changes:")
+	s.Require().Contains(buf, "+2")
+	s.Require().Contains(buf, "-1")
+}
+
+func (s *DetailViewSuite) TestRenderOverview_BeforeDiffFetch_ShowsLoadingHint() {
+	mr := &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(nil, mr)
+
+	s.detail.Render(s.pane())
+
+	s.Require().Contains(s.pane().Buffer(), "Changes:")
+	s.Require().Contains(s.pane().Buffer(), "loading")
 }
 
 func (s *DetailViewSuite) TestConsumePendingFocus_IsIdempotent() {
