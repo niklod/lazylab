@@ -70,3 +70,46 @@ func TestLayout_TinyTerminalIsNoOp(t *testing.T) {
 	_, err = g.View(ViewRepos)
 	require.Error(t, err, "no views should be created at sub-minimum size")
 }
+
+//nolint:paralleltest // gocui headless screen is shared; parallel access races.
+func TestHighlightFocused_LightsDetailFrameForDetailFamily(t *testing.T) {
+	g, err := gocui.NewGui(gocui.NewGuiOpts{Headless: true, Width: 120, Height: 40})
+	require.NoError(t, err)
+	t.Cleanup(g.Close)
+	t.Cleanup(func() { SetFocusOrderProvider(nil) })
+
+	require.NoError(t, layout(g))
+
+	SetFocusOrderProvider(func() []string {
+		return []string{ViewRepos, ViewMRs, ViewDetailDiffTree, ViewDetailDiffContent}
+	})
+	_, err = g.SetView(ViewDetailDiffTree, 50, 1, 80, 30, 0)
+	if err != nil && err.Error() != "unknown view" {
+		require.NoError(t, err)
+	}
+	_, err = g.SetCurrentView(ViewDetailDiffTree)
+	require.NoError(t, err)
+
+	highlightFocused(g)
+
+	detail, err := g.View(ViewDetail)
+	require.NoError(t, err)
+	require.Equal(t, gocui.ColorGreen, detail.FrameColor,
+		"detail frame must stay green while a sub-pane is focused")
+
+	repos, err := g.View(ViewRepos)
+	require.NoError(t, err)
+	require.Equal(t, gocui.ColorDefault, repos.FrameColor,
+		"non-focused panes stay default colour")
+}
+
+//nolint:paralleltest // focusOrderFn is a package global.
+func TestSetFocusOrderProvider_NilRestoresBaseline(t *testing.T) {
+	t.Cleanup(func() { SetFocusOrderProvider(nil) })
+
+	SetFocusOrderProvider(func() []string { return []string{"x", "y"} })
+	require.Equal(t, []string{"x", "y"}, focusOrderFn())
+
+	SetFocusOrderProvider(nil)
+	require.Equal(t, focusOrder, focusOrderFn())
+}

@@ -288,6 +288,228 @@ func (s *DetailViewSuite) TestApplyStats_StaleSeqIgnored() {
 	s.Require().Nil(s.detail.Stats(), "stale seq must not clobber current state")
 }
 
+func (s *DetailViewSuite) TestSetTab_CyclesThroughEveryTab() {
+	got := make([]DetailTab, 0, 4)
+	got = append(got, s.detail.CurrentTab())
+	for i := 0; i < 3; i++ {
+		next := nextDetailTab(s.detail.CurrentTab(), 1)
+		s.detail.SetTab(next, nil)
+		got = append(got, s.detail.CurrentTab())
+	}
+
+	s.Require().Equal([]DetailTab{
+		DetailTabOverview, DetailTabDiff, DetailTabConversation, DetailTabPipeline,
+	}, got)
+
+	next := nextDetailTab(s.detail.CurrentTab(), 1)
+	s.detail.SetTab(next, nil)
+	s.Require().Equal(DetailTabOverview, s.detail.CurrentTab(), "cycle wraps")
+}
+
+func (s *DetailViewSuite) TestRenderTabBar_HighlightsActiveTab() {
+	got := renderTabBar(DetailTabDiff)
+
+	s.Require().Contains(got, ansiReverse+"Diff"+ansiReset)
+	s.Require().Contains(got, "Overview")
+	s.Require().Contains(got, "Conversation")
+	s.Require().Contains(got, "Pipeline")
+	s.Require().NotContains(got, ansiReverse+"Overview"+ansiReset)
+}
+
+func (s *DetailViewSuite) TestSetTab_RendersActiveTabLabel() {
+	mr := &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(nil, mr)
+
+	s.detail.SetTab(DetailTabDiff, nil)
+	s.detail.Render(s.pane())
+
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, "Diff")
+	s.Require().Contains(buf, "Overview")
+}
+
+func (s *DetailViewSuite) TestSetTab_ConversationAndPipelineShowStubs() {
+	s.detail.SetMR(nil, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
+
+	s.detail.SetTab(DetailTabConversation, nil)
+	s.detail.Render(s.pane())
+	s.Require().Contains(s.pane().Buffer(), detailConversationStub)
+
+	s.detail.SetTab(DetailTabPipeline, nil)
+	s.detail.Render(s.pane())
+	s.Require().Contains(s.pane().Buffer(), detailPipelineStub)
+}
+
+func (s *DetailViewSuite) TestSetTabSync_FetchesDiffAndPopulatesTree() {
+	var hits atomic.Int32
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/diffs") {
+			http.NotFound(w, r)
+
+			return
+		}
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[
+			{"old_path":"src/a.go","new_path":"src/a.go","diff":"@@ -1 +1 @@\n-old\n+new\n"},
+			{"old_path":"src/b.go","new_path":"src/b.go","diff":"@@ -1 +1 @@\n-x\n+y\n","new_file":true}
+		]`)
+	})
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, mr)
+
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabDiff, project))
+
+	s.Require().Equal(int32(1), hits.Load())
+	s.Require().Equal(DetailTabDiff, s.detail.CurrentTab())
+
+	tree := s.detail.DiffTree()
+	s.Require().NotNil(tree)
+	s.Require().Equal(3, tree.RowCount(), "one dir header + two leaves")
+	selected := tree.SelectedFile()
+	s.Require().NotNil(selected)
+	s.Require().Equal("src/a.go", selected.NewPath)
+
+	content := s.detail.DiffContent()
+	s.Require().NotNil(content)
+	s.Require().NotNil(content.CurrentFile())
+	s.Require().Equal("src/a.go", content.CurrentFile().NewPath)
+}
+
+func (s *DetailViewSuite) TestSetTabSync_EmptyChangesShowsEmptyHint() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/diffs") {
+			http.NotFound(w, r)
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[]`)
+	})
+	mr := &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 1, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, mr)
+
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabDiff, project))
+
+	s.Require().Equal(0, s.detail.DiffTree().RowCount())
+}
+
+func (s *DetailViewSuite) TestSetTabSync_UpstreamErrorSurfaces() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"fail"}`)
+	})
+	mr := &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 1, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, mr)
+
+	err := s.detail.SetTabSync(context.Background(), DetailTabDiff, project)
+
+	s.Require().Error(err)
+	s.Require().ErrorContains(err, "fetch mr changes")
+}
+
+func (s *DetailViewSuite) TestSetMR_ResetsDiffState() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/diffs") {
+			http.NotFound(w, r)
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[{"old_path":"a","new_path":"a","diff":"@@ -1 +1 @@\n-x\n+y\n"}]`)
+	})
+	project := &models.Project{ID: 1, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabDiff, project))
+	s.Require().Equal(1, s.detail.DiffTree().RowCount())
+
+	s.detail.SetMR(project, &models.MergeRequest{IID: 2, Title: "U", State: models.MRStateOpened})
+
+	s.Require().Equal(0, s.detail.DiffTree().RowCount(), "tree is cleared on MR swap")
+	s.Require().Nil(s.detail.DiffContent().CurrentFile())
+}
+
+func (s *DetailViewSuite) TestSetTabSync_ErrorPropagatesToWidgets() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/diffs") {
+			http.NotFound(w, r)
+
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"explode"}`)
+	})
+	mr := &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 1, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, mr)
+
+	err := s.detail.SetTabSync(context.Background(), DetailTabDiff, project)
+
+	s.Require().Error(err)
+
+	tree := s.detail.DiffTree()
+	content := s.detail.DiffContent()
+
+	treePane, gvErr := s.g.SetView(keymap.ViewDetailDiffTree, 0, 0, 30, 20, 0)
+	if gvErr != nil {
+		tree.Render(treePane)
+	}
+	contentPane, gvErr := s.g.SetView(keymap.ViewDetailDiffContent, 0, 0, 30, 20, 0)
+	if gvErr != nil {
+		content.Render(contentPane)
+	}
+
+	s.Require().Contains(tree.statusSnapshot(), "explode")
+}
+
+func (s *DetailViewSuite) TestSetMR_Nil_ClearsDiffWidgets() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/diffs") {
+			http.NotFound(w, r)
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[{"old_path":"a","new_path":"a","diff":"@@ -1 +1 @@\n-x\n+y\n"}]`)
+	})
+	project := &models.Project{ID: 1, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabDiff, project))
+	s.Require().Equal(1, s.detail.DiffTree().RowCount())
+
+	s.detail.SetMR(nil, nil)
+
+	s.Require().Equal(0, s.detail.DiffTree().RowCount())
+	s.Require().Nil(s.detail.DiffContent().CurrentFile())
+}
+
+func (s *DetailViewSuite) TestConsumePendingFocus_IsIdempotent() {
+	s.detail.SetMR(nil, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
+	s.detail.SetTab(DetailTabDiff, nil)
+
+	first := s.detail.ConsumePendingFocus()
+	second := s.detail.ConsumePendingFocus()
+
+	s.Require().Equal(keymap.ViewDetailDiffTree, first)
+	s.Require().Empty(second, "second consume returns empty")
+}
+
+func (s *DetailViewSuite) TestFocusTargetForTab_TabletoPane() {
+	s.Require().Equal(keymap.ViewDetail, focusTargetForTab(DetailTabOverview))
+	s.Require().Equal(keymap.ViewDetailDiffTree, focusTargetForTab(DetailTabDiff))
+	s.Require().Equal(keymap.ViewDetail, focusTargetForTab(DetailTabConversation))
+	s.Require().Equal(keymap.ViewDetail, focusTargetForTab(DetailTabPipeline))
+}
+
+func (s *DetailViewSuite) TestNextDetailTab_Wraps() {
+	s.Require().Equal(DetailTabDiff, nextDetailTab(DetailTabOverview, 1))
+	s.Require().Equal(DetailTabPipeline, nextDetailTab(DetailTabOverview, -1))
+	s.Require().Equal(DetailTabOverview, nextDetailTab(DetailTabPipeline, 1))
+}
+
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; parallel runs race.
 func TestDetailViewSuite(t *testing.T) {
 	suite.Run(t, new(DetailViewSuite))

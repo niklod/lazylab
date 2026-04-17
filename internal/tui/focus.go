@@ -44,7 +44,7 @@ func focusPrev(g *gocui.Gui, _ *gocui.View) error {
 }
 
 func setFocus(g *gocui.Gui, delta int) error {
-	next := cycle(focusOrder, currentViewName(g), delta)
+	next := cycle(focusOrderFn(), currentViewName(g), delta)
 	if _, err := g.SetCurrentView(next); err != nil {
 		return fmt.Errorf("focus %q: %w", next, err)
 	}

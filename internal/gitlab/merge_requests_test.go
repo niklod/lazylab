@@ -393,6 +393,120 @@ func (s *MergeRequestsSuite) TestGetMRDiscussionStats_ValidatesInputs() {
 	s.Require().Error(err)
 }
 
+func (s *MergeRequestsSuite) TestGetMRChanges_PaginatesAndMapsFiles() {
+	page1 := `[
+		{"old_path":"src/a.go","new_path":"src/a.go","diff":"@@ -1 +1 @@\n-a\n+b\n","new_file":false,"renamed_file":false,"deleted_file":false},
+		{"old_path":"src/b.go","new_path":"src/b_renamed.go","diff":"","new_file":false,"renamed_file":true,"deleted_file":false}
+	]`
+	page2 := `[
+		{"old_path":"","new_path":"src/c.go","diff":"@@ -0,0 +1 @@\n+new\n","new_file":true,"renamed_file":false,"deleted_file":false}
+	]`
+
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "", "1":
+			w.Header().Set("X-Next-Page", "2")
+			_, _ = w.Write([]byte(page1))
+		case "2":
+			w.Header().Set("X-Next-Page", "")
+			_, _ = w.Write([]byte(page2))
+		default:
+			s.T().Fatalf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+	)
+	s.Require().NoError(err)
+
+	data, err := client.GetMRChanges(context.Background(), 42, 7)
+
+	s.Require().NoError(err)
+	s.Require().NotNil(data)
+	s.Require().Len(data.Files, 3)
+
+	s.Require().Equal("src/a.go", data.Files[0].NewPath)
+	s.Require().Contains(data.Files[0].Diff, "+b")
+
+	s.Require().True(data.Files[1].RenamedFile)
+	s.Require().Equal("src/b_renamed.go", data.Files[1].NewPath)
+
+	s.Require().True(data.Files[2].NewFile)
+	s.Require().Equal("src/c.go", data.Files[2].NewPath)
+
+	for _, p := range paths {
+		s.Require().Contains(p, "/projects/42/merge_requests/7/diffs")
+	}
+}
+
+func (s *MergeRequestsSuite) TestGetMRChanges_WrapsUpstreamError() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"500"}`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+	)
+	s.Require().NoError(err)
+
+	_, err = client.GetMRChanges(context.Background(), 42, 7)
+
+	s.Require().Error(err)
+	s.Require().ErrorContains(err, "gitlab: list mr diffs")
+}
+
+func (s *MergeRequestsSuite) TestGetMRChanges_ValidatesInputs() {
+	client, err := gitlab.New(config.GitLabConfig{URL: "https://gl", Token: "secret"})
+	s.Require().NoError(err)
+
+	_, err = client.GetMRChanges(context.Background(), 0, 7)
+	s.Require().Error(err)
+
+	_, err = client.GetMRChanges(context.Background(), 1, 0)
+	s.Require().Error(err)
+}
+
+func (s *MergeRequestsSuite) TestGetMRChanges_CachedReusesOnSecondCall() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[{"old_path":"a","new_path":"a","diff":""}]`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	fs := afero.NewMemMapFs()
+	c := cache.New(config.CacheConfig{Directory: "/cache", TTL: 600}, fs)
+	s.T().Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = c.Shutdown(shutdownCtx)
+	})
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+		gitlab.WithCache(c),
+	)
+	s.Require().NoError(err)
+
+	_, err = client.GetMRChanges(context.Background(), 1, 2)
+	s.Require().NoError(err)
+	_, err = client.GetMRChanges(context.Background(), 1, 2)
+	s.Require().NoError(err)
+
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+}
+
 func (s *MergeRequestsSuite) TestGetCurrentUser_MapsFields() {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

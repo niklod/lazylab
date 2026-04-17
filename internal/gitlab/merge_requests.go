@@ -14,9 +14,11 @@ const (
 	mrCacheNamespace            = "mr"
 	mrApprovalsCacheNamespace   = "mr_approvals"
 	mrDiscussionsCacheNamespace = "mr_discussions"
+	mrChangesCacheNamespace     = "mr_changes"
 
 	defaultMRsPerPage         = 100
 	defaultDiscussionsPerPage = 100
+	defaultMRDiffsPerPage     = 100
 )
 
 // ListMergeRequestsOptions mirrors the Python `list_merge_requests` arguments.
@@ -180,6 +182,60 @@ func allResolvableResolved(notes []*gogitlab.Note) bool {
 	}
 
 	return true
+}
+
+// GetMRChanges fetches the list of file-level diffs for an MR. Mirrors Python
+// `get_mr_changes`; uses client-go's ListMergeRequestDiffs (the non-deprecated
+// replacement for /changes). The MergeRequestDiff shape — OldPath, NewPath,
+// Diff, NewFile, RenamedFile, DeletedFile — already matches models.MRDiffFile
+// 1:1, so the mapping is a direct copy. Paginated until NextPage == 0.
+// Cached per (project_id, iid).
+func (c *Client) GetMRChanges(ctx context.Context, projectID, iid int) (*models.MRDiffData, error) {
+	if projectID <= 0 || iid <= 0 {
+		return nil, fmt.Errorf("gitlab: get mr changes: project id and iid required")
+	}
+
+	loader := func(ctx context.Context) (*models.MRDiffData, error) {
+		return c.listMRDiffsRaw(ctx, projectID, iid)
+	}
+
+	return doCached(ctx, c, mrChangesCacheNamespace, "get mr changes", loader, projectID, iid)
+}
+
+func (c *Client) listMRDiffsRaw(ctx context.Context, projectID, iid int) (*models.MRDiffData, error) {
+	listOpts := &gogitlab.ListMergeRequestDiffsOptions{
+		ListOptions: gogitlab.ListOptions{
+			Page:    1,
+			PerPage: int64(defaultMRDiffsPerPage),
+		},
+	}
+
+	out := &models.MRDiffData{}
+	for {
+		page, resp, err := c.api.MergeRequests.ListMergeRequestDiffs(projectID, int64(iid), listOpts, gogitlab.WithContext(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("gitlab: list mr diffs page %d: %w", listOpts.Page, err)
+		}
+		for _, d := range page {
+			if d == nil {
+				continue
+			}
+			out.Files = append(out.Files, models.MRDiffFile{
+				OldPath:     d.OldPath,
+				NewPath:     d.NewPath,
+				Diff:        d.Diff,
+				NewFile:     d.NewFile,
+				RenamedFile: d.RenamedFile,
+				DeletedFile: d.DeletedFile,
+			})
+		}
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		listOpts.Page = resp.NextPage
+	}
+
+	return out, nil
 }
 
 // GetMRApprovals fetches approval status for an MR. Cached per (project_id, iid).

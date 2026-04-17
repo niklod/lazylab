@@ -7,6 +7,7 @@ import (
 	"github.com/jesseduffield/gocui"
 
 	"github.com/niklod/lazylab/internal/appcontext"
+	"github.com/niklod/lazylab/internal/models"
 	"github.com/niklod/lazylab/internal/tui/keymap"
 )
 
@@ -51,8 +52,214 @@ func (v *Views) Bindings() []keymap.Binding {
 			Handler: v.selectMRForDetail,
 		})
 	}
+	if v.Detail != nil {
+		out = append(out, v.detailBindings()...)
+	}
 
 	return out
+}
+
+// FocusOrder returns the active focus cycle — includes the Diff-tab
+// sub-panes when the Diff tab is showing, otherwise the plain 3-pane cycle.
+// Installed into the tui package via SetFocusOrderProvider at startup.
+func (v *Views) FocusOrder() []string {
+	base := []string{keymap.ViewRepos, keymap.ViewMRs, keymap.ViewDetail}
+	if v == nil || v.Detail == nil || v.Detail.CurrentTab() != DetailTabDiff {
+		return base
+	}
+
+	return []string{
+		keymap.ViewRepos,
+		keymap.ViewMRs,
+		keymap.ViewDetailDiffTree,
+		keymap.ViewDetailDiffContent,
+	}
+}
+
+// detailBindings produces the full per-view binding set for the Detail
+// pane and its Diff-tab sub-panes. `[` / `]` are duplicated across every
+// detail-family view because gocui dispatches by focused view name —
+// binding only on ViewDetail leaves the user stuck in the Diff tab.
+func (v *Views) detailBindings() []keymap.Binding {
+	cycleKeys := []rune{'[', ']'}
+	detailFamily := []string{
+		keymap.ViewDetail,
+		keymap.ViewDetailDiffTree,
+		keymap.ViewDetailDiffContent,
+	}
+
+	var out []keymap.Binding
+	for _, k := range cycleKeys {
+		for _, view := range detailFamily {
+			delta := 1
+			if k == '[' {
+				delta = -1
+			}
+			out = append(out, keymap.Binding{
+				View:    view,
+				Key:     k,
+				Handler: v.cycleDetailTab(delta),
+			})
+		}
+	}
+
+	out = append(out, v.diffTreeBindings()...)
+	out = append(out, v.diffContentBindings()...)
+
+	return out
+}
+
+func (v *Views) diffTreeBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{View: keymap.ViewDetailDiffTree, Key: 'j', Handler: v.diffTreeMove(1)},
+		{View: keymap.ViewDetailDiffTree, Key: 'k', Handler: v.diffTreeMove(-1)},
+		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyArrowDown, Handler: v.diffTreeMove(1)},
+		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyArrowUp, Handler: v.diffTreeMove(-1)},
+		{View: keymap.ViewDetailDiffTree, Key: 'g', Handler: v.diffTreeMoveToStart},
+		{View: keymap.ViewDetailDiffTree, Key: 'G', Handler: v.diffTreeMoveToEnd},
+		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyEnter, Handler: v.diffTreeSelect},
+		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyCtrlD, Handler: v.diffTreeHalfPage(+1)},
+		{View: keymap.ViewDetailDiffTree, Key: gocui.KeyCtrlU, Handler: v.diffTreeHalfPage(-1)},
+	}
+}
+
+func (v *Views) diffContentBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{View: keymap.ViewDetailDiffContent, Key: 'j', Handler: v.diffContentScroll(1)},
+		{View: keymap.ViewDetailDiffContent, Key: 'k', Handler: v.diffContentScroll(-1)},
+		{View: keymap.ViewDetailDiffContent, Key: gocui.KeyArrowDown, Handler: v.diffContentScroll(1)},
+		{View: keymap.ViewDetailDiffContent, Key: gocui.KeyArrowUp, Handler: v.diffContentScroll(-1)},
+		{View: keymap.ViewDetailDiffContent, Key: gocui.KeyCtrlD, Handler: v.diffContentHalfPage(+1)},
+		{View: keymap.ViewDetailDiffContent, Key: gocui.KeyCtrlU, Handler: v.diffContentHalfPage(-1)},
+	}
+}
+
+// cycleDetailTab returns a handler that advances the detail pane's active
+// tab. The returned closure cannot accept a context because gocui's
+// keybinding handler signature is fixed at (g, pv) — internal fetches fall
+// back to context.Background() by design (see G3 follow-ups for similar
+// handlers in MRsView). contextcheck flags the chain; silenced here.
+//
+//nolint:contextcheck // gocui handler has no context; background is intentional
+func (v *Views) cycleDetailTab(delta int) keymap.HandlerFunc {
+	return func(_ *gocui.Gui, _ *gocui.View) error {
+		if v.Detail == nil {
+			return nil
+		}
+		next := nextDetailTab(v.Detail.CurrentTab(), delta)
+		project := v.currentProject()
+		v.Detail.SetTab(next, project)
+
+		return nil
+	}
+}
+
+func (v *Views) diffTreeMove(delta int) keymap.HandlerFunc {
+	return func(g *gocui.Gui, _ *gocui.View) error {
+		if v.Detail == nil || v.Detail.DiffTree() == nil {
+			return nil
+		}
+		if v.Detail.DiffTree().MoveCursor(delta) {
+			v.pushDiffSelection(g)
+		}
+
+		return nil
+	}
+}
+
+func (v *Views) diffTreeMoveToStart(g *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil || v.Detail.DiffTree() == nil {
+		return nil
+	}
+	v.Detail.DiffTree().MoveCursorToStart()
+	v.pushDiffSelection(g)
+
+	return nil
+}
+
+func (v *Views) diffTreeMoveToEnd(g *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil || v.Detail.DiffTree() == nil {
+		return nil
+	}
+	v.Detail.DiffTree().MoveCursorToEnd()
+	v.pushDiffSelection(g)
+
+	return nil
+}
+
+func (v *Views) diffTreeSelect(g *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil {
+		return nil
+	}
+	v.Detail.SelectDiffFile(g)
+
+	return nil
+}
+
+func (v *Views) diffTreeHalfPage(direction int) keymap.HandlerFunc {
+	return func(g *gocui.Gui, pv *gocui.View) error {
+		if v.Detail == nil || v.Detail.DiffTree() == nil || pv == nil {
+			return nil
+		}
+		_, innerH := pv.InnerSize()
+		step := innerH / 2
+		if step <= 0 {
+			step = 1
+		}
+		if v.Detail.DiffTree().MoveCursor(direction * step) {
+			v.pushDiffSelection(g)
+		}
+
+		return nil
+	}
+}
+
+func (v *Views) diffContentScroll(delta int) keymap.HandlerFunc {
+	return func(_ *gocui.Gui, pv *gocui.View) error {
+		if v.Detail == nil || v.Detail.DiffContent() == nil || pv == nil {
+			return nil
+		}
+		v.Detail.DiffContent().ScrollBy(pv, delta)
+
+		return nil
+	}
+}
+
+func (v *Views) diffContentHalfPage(direction int) keymap.HandlerFunc {
+	return func(_ *gocui.Gui, pv *gocui.View) error {
+		if v.Detail == nil || v.Detail.DiffContent() == nil || pv == nil {
+			return nil
+		}
+		_, innerH := pv.InnerSize()
+		step := innerH / 2
+		if step <= 0 {
+			step = 1
+		}
+		v.Detail.DiffContent().ScrollBy(pv, direction*step)
+
+		return nil
+	}
+}
+
+func (v *Views) pushDiffSelection(g *gocui.Gui) {
+	if v.Detail == nil {
+		return
+	}
+	v.Detail.SelectDiffFile(g)
+}
+
+func (v *Views) currentProject() *models.Project {
+	if v.MRs == nil {
+		return nil
+	}
+
+	return v.MRs.CurrentProject()
+}
+
+func nextDetailTab(current DetailTab, delta int) DetailTab {
+	n := detailTabCount
+
+	return DetailTab(((int(current)+delta)%n + n) % n)
 }
 
 // placeCursor sets the pane's Origin and Cursor so that contentRow (the

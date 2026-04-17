@@ -105,6 +105,14 @@ func renderPanes(g *gocui.Gui, v *views.Views) error {
 			return err
 		}
 	}
+	if v != nil && v.Detail != nil {
+		if err := manageDiffSubpanes(g, v, r.detail); err != nil {
+			return err
+		}
+		if err := applyPendingDetailFocus(g, v); err != nil {
+			return err
+		}
+	}
 
 	if g.CurrentView() == nil {
 		if _, err := g.SetCurrentView(ViewRepos); err != nil {
@@ -117,48 +125,146 @@ func renderPanes(g *gocui.Gui, v *views.Views) error {
 	return nil
 }
 
+// manageDiffSubpanes mounts the Diff-tab's file-tree + content panes when
+// the Detail view's active tab is Diff; removes them otherwise. Lives
+// inside the detail rect — pane row 0 is the tab bar, child panes occupy
+// rows 1..end. Frame is disabled to avoid nested borders inside detail's
+// frame; the 30/70 split is visual, enforced by a 1-column column gap.
+func manageDiffSubpanes(g *gocui.Gui, v *views.Views, detail rect) error {
+	active := v.Detail != nil && v.Detail.CurrentTab() == views.DetailTabDiff
+	if !active {
+		if err := deleteViewIfPresent(g, keymap.ViewDetailDiffTree); err != nil {
+			return err
+		}
+
+		return deleteViewIfPresent(g, keymap.ViewDetailDiffContent)
+	}
+
+	inner := rect{
+		x0: detail.x0 + 1,
+		y0: detail.y0 + 2,
+		x1: detail.x1 - 1,
+		y1: detail.y1 - 1,
+	}
+	if inner.x1-inner.x0 < 10 || inner.y1-inner.y0 < 3 {
+		return nil
+	}
+
+	treeWidth := (inner.x1 - inner.x0) * 30 / 100
+	if treeWidth < 8 {
+		treeWidth = 8
+	}
+	treeRect := rect{x0: inner.x0, y0: inner.y0, x1: inner.x0 + treeWidth, y1: inner.y1}
+	contentRect := rect{x0: inner.x0 + treeWidth + 1, y0: inner.y0, x1: inner.x1, y1: inner.y1}
+
+	if err := mountSubpane(g, keymap.ViewDetailDiffTree, treeRect, func(pv *gocui.View) {
+		pv.Frame = false
+		pv.Wrap = false
+	}); err != nil {
+		return err
+	}
+	if err := mountSubpane(g, keymap.ViewDetailDiffContent, contentRect, func(pv *gocui.View) {
+		pv.Frame = false
+		pv.Wrap = false
+	}); err != nil {
+		return err
+	}
+
+	if tree, err := g.View(keymap.ViewDetailDiffTree); err == nil && v.Detail.DiffTree() != nil {
+		v.Detail.DiffTree().Render(tree)
+	}
+	if content, err := g.View(keymap.ViewDetailDiffContent); err == nil && v.Detail.DiffContent() != nil {
+		v.Detail.DiffContent().Render(content)
+	}
+
+	return nil
+}
+
+func mountSubpane(g *gocui.Gui, name string, r rect, onCreate func(*gocui.View)) error {
+	pv, err := g.SetView(name, r.x0, r.y0, r.x1-1, r.y1-1, 0)
+	firstCreate := goerrors.Is(err, gocui.ErrUnknownView)
+	if err != nil && !firstCreate {
+		return fmt.Errorf("set %s: %w", name, err)
+	}
+	if firstCreate && onCreate != nil {
+		onCreate(pv)
+	}
+
+	return nil
+}
+
+func deleteViewIfPresent(g *gocui.Gui, name string) error {
+	if err := g.DeleteView(name); err != nil && !goerrors.Is(err, gocui.ErrUnknownView) {
+		return fmt.Errorf("delete %s: %w", name, err)
+	}
+
+	return nil
+}
+
+// applyPendingDetailFocus consumes a tab-switch focus request posted by
+// DetailView.SetTab. Runs after manageDiffSubpanes so the target view is
+// guaranteed to exist (or not — caller swallows ErrUnknownView for the
+// Overview case where the base pane is always mounted by renderPanes).
+func applyPendingDetailFocus(g *gocui.Gui, v *views.Views) error {
+	target := v.Detail.ConsumePendingFocus()
+	if target == "" {
+		return nil
+	}
+	if _, err := g.SetCurrentView(target); err != nil {
+		return fmt.Errorf("focus %q: %w", target, err)
+	}
+
+	return nil
+}
+
 // manageSearchPane mounts or removes an ephemeral single-line search input
 // pinned to the top of its owning pane. The pane's existence is derived from
 // `active` (the owning view's SearchActive reading), so a missed DeleteView
 // from a handler self-heals on the next render tick.
 func manageSearchPane(g *gocui.Gui, viewName string, active bool, r rect) error {
 	if !active {
-		if err := g.DeleteView(viewName); err != nil && !goerrors.Is(err, gocui.ErrUnknownView) {
-			return fmt.Errorf("delete %s: %w", viewName, err)
-		}
-
-		return nil
+		return deleteViewIfPresent(g, viewName)
 	}
 
 	sr := rect{x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y0 + searchPaneHeight}
-	sv, err := g.SetView(viewName, sr.x0, sr.y0, sr.x1-1, sr.y1-1, 0)
-	firstCreate := goerrors.Is(err, gocui.ErrUnknownView)
-	if err != nil && !firstCreate {
-		return fmt.Errorf("set %s: %w", viewName, err)
-	}
-	if firstCreate {
+
+	return mountSubpane(g, viewName, sr, func(sv *gocui.View) {
 		sv.Frame = true
 		sv.Title = " Search "
 		sv.Editable = true
 		sv.Editor = gocui.DefaultEditor
-	}
-
-	return nil
+	})
 }
 
 func highlightFocused(g *gocui.Gui) {
 	current := currentViewName(g)
-	for _, name := range focusOrder {
+	currentInDetail := detailFamily(current)
+
+	painted := map[string]struct{}{}
+	paint := func(name string) {
 		v, err := g.View(name)
 		if err != nil {
-			continue
+			return
 		}
-		if name == current {
+		painted[name] = struct{}{}
+		focused := name == current || (name == ViewDetail && currentInDetail)
+		if focused {
 			v.FrameColor = gocui.ColorGreen
 			v.TitleColor = gocui.ColorGreen
-		} else {
-			v.FrameColor = gocui.ColorDefault
-			v.TitleColor = gocui.ColorDefault
+
+			return
 		}
+		v.FrameColor = gocui.ColorDefault
+		v.TitleColor = gocui.ColorDefault
+	}
+
+	for _, name := range focusOrderFn() {
+		paint(name)
+	}
+	// ViewDetail may be absent from the Diff-tab focus order (its sub-panes
+	// own the cycle) but the frame must still reflect focus state. Paint
+	// the parent pane explicitly so the green border tracks the family.
+	if _, seen := painted[ViewDetail]; !seen {
+		paint(ViewDetail)
 	}
 }

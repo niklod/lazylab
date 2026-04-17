@@ -36,6 +36,9 @@ func Run(ctx context.Context, app *appcontext.AppContext) error {
 	v := views.New(g, app)
 	g.SetManagerFunc(NewManager(v))
 
+	SetFocusOrderProvider(v.FocusOrder)
+	defer SetFocusOrderProvider(nil)
+
 	if err := Bind(g, v.Bindings()...); err != nil {
 		return fmt.Errorf("tui: register keybindings: %w", err)
 	}
