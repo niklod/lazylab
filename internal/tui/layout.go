@@ -8,7 +8,12 @@ import (
 	// Use goerrors.Is to traverse the wrap chain by pointer-equality instead.
 	goerrors "github.com/go-errors/errors"
 	"github.com/jesseduffield/gocui"
+
+	"github.com/niklod/lazylab/internal/tui/keymap"
+	"github.com/niklod/lazylab/internal/tui/views"
 )
+
+const searchPaneHeight = 3
 
 type rect struct {
 	x0, y0, x1, y1 int
@@ -39,7 +44,24 @@ type pane struct {
 	title string
 }
 
+// layout renders the static 3-pane frame. Kept as a free function so the
+// existing test suite can call it directly (no views dependency); app.go
+// uses NewManager when a Views instance is present.
 func layout(g *gocui.Gui) error {
+	return renderPanes(g, nil)
+}
+
+// NewManager returns a gocui manager that renders the 3-pane frame and then
+// delegates per-pane drawing to the Views. Exported so e2e tests can install
+// the production layout against a headless Gui without re-implementing the
+// frame.
+func NewManager(v *views.Views) func(*gocui.Gui) error {
+	return func(g *gocui.Gui) error {
+		return renderPanes(g, v)
+	}
+}
+
+func renderPanes(g *gocui.Gui, v *views.Views) error {
 	maxX, maxY := g.Size()
 	if maxX < 2 || maxY < 2 {
 		return nil
@@ -52,16 +74,23 @@ func layout(g *gocui.Gui) error {
 	}
 
 	for _, p := range panes {
-		v, err := g.SetView(p.name, p.rect.x0, p.rect.y0, p.rect.x1-1, p.rect.y1-1, 0)
+		pv, err := g.SetView(p.name, p.rect.x0, p.rect.y0, p.rect.x1-1, p.rect.y1-1, 0)
 		firstCreate := goerrors.Is(err, gocui.ErrUnknownView)
 		if err != nil && !firstCreate {
 			return fmt.Errorf("set view %q: %w", p.name, err)
 		}
 		if firstCreate {
-			v.Frame = true
-			v.Title = p.title
-			v.Wrap = false
+			pv.Frame = true
+			pv.Title = p.title
+			pv.Wrap = false
 		}
+		if v != nil && p.name == ViewRepos {
+			v.Repos.Render(pv)
+		}
+	}
+
+	if err := manageReposSearch(g, v, r.repos); err != nil {
+		return err
 	}
 
 	if g.CurrentView() == nil {
@@ -71,6 +100,38 @@ func layout(g *gocui.Gui) error {
 	}
 
 	highlightFocused(g)
+
+	return nil
+}
+
+// manageReposSearch mounts or removes the repos_search pane based on whether
+// the repos view reports an active search. The pane sits along the top of the
+// repos rectangle and is an editable single-line input.
+func manageReposSearch(g *gocui.Gui, v *views.Views, r rect) error {
+	if v == nil || v.Repos == nil {
+		return nil
+	}
+
+	if !v.Repos.SearchActive() {
+		if err := g.DeleteView(keymap.ViewReposSearch); err != nil && !goerrors.Is(err, gocui.ErrUnknownView) {
+			return fmt.Errorf("delete search view: %w", err)
+		}
+
+		return nil
+	}
+
+	searchRect := rect{x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y0 + searchPaneHeight}
+	sv, err := g.SetView(keymap.ViewReposSearch, searchRect.x0, searchRect.y0, searchRect.x1-1, searchRect.y1-1, 0)
+	firstCreate := goerrors.Is(err, gocui.ErrUnknownView)
+	if err != nil && !firstCreate {
+		return fmt.Errorf("set search view: %w", err)
+	}
+	if firstCreate {
+		sv.Frame = true
+		sv.Title = " Search "
+		sv.Editable = true
+		sv.Editor = gocui.DefaultEditor
+	}
 
 	return nil
 }

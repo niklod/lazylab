@@ -13,11 +13,14 @@ import (
 	"github.com/niklod/lazylab/internal/models"
 )
 
+const testConfigPath = "/cfg/config.yaml"
+
 type AppContextSuite struct {
 	suite.Suite
 	cfg    *config.Config
 	client *gitlab.Client
 	cache  *cache.Cache
+	fs     afero.Fs
 }
 
 func (s *AppContextSuite) SetupTest() {
@@ -27,20 +30,23 @@ func (s *AppContextSuite) SetupTest() {
 	client, err := gitlab.New(s.cfg.GitLab)
 	s.Require().NoError(err)
 	s.client = client
-	s.cache = cache.New(s.cfg.Cache, afero.NewMemMapFs())
+	s.fs = afero.NewMemMapFs()
+	s.cache = cache.New(s.cfg.Cache, s.fs)
 }
 
-func (s *AppContextSuite) TestNew_WiresConfigClientAndCache() {
-	ctx := appcontext.New(s.cfg, s.client, s.cache)
+func (s *AppContextSuite) TestNew_WiresAllFields() {
+	ctx := appcontext.New(s.cfg, s.client, s.cache, s.fs, testConfigPath)
 
 	s.Require().Same(s.cfg, ctx.Config)
 	s.Require().Same(s.client, ctx.GitLab)
 	s.Require().Same(s.cache, ctx.Cache)
+	s.Require().Equal(s.fs, ctx.FS)
+	s.Require().Equal(testConfigPath, ctx.ConfigPath)
 	s.Require().Nil(ctx.CurrentProject)
 }
 
 func (s *AppContextSuite) TestWithCurrentProject_ReturnsCopy_DoesNotMutateOriginal() {
-	ctx := appcontext.New(s.cfg, s.client, s.cache)
+	ctx := appcontext.New(s.cfg, s.client, s.cache, s.fs, testConfigPath)
 	project := &models.Project{ID: 42, PathWithNamespace: "group/demo"}
 
 	next := ctx.WithCurrentProject(project)
@@ -50,11 +56,13 @@ func (s *AppContextSuite) TestWithCurrentProject_ReturnsCopy_DoesNotMutateOrigin
 	s.Require().Same(s.cfg, next.Config)
 	s.Require().Same(s.client, next.GitLab)
 	s.Require().Same(s.cache, next.Cache)
+	s.Require().Equal(s.fs, next.FS)
+	s.Require().Equal(testConfigPath, next.ConfigPath)
 	s.Require().NotSame(ctx, next)
 }
 
 func (s *AppContextSuite) TestWithCurrentProject_Nil_Clears() {
-	ctx := appcontext.New(s.cfg, s.client, s.cache).WithCurrentProject(&models.Project{ID: 1})
+	ctx := appcontext.New(s.cfg, s.client, s.cache, s.fs, testConfigPath).WithCurrentProject(&models.Project{ID: 1})
 
 	cleared := ctx.WithCurrentProject(nil)
 

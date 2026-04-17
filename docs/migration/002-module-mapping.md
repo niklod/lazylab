@@ -23,6 +23,9 @@ internal/
   tui/                   # gocui views, layout, key bindings
     app.go
     keys.go
+    keymap/              # leaf package: shared Binding type + pane-name
+                         # constants, imported by both tui and tui/views
+                         # to avoid an import cycle (ADR 011)
     views/
       repos.go
       mrs.go

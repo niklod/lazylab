@@ -143,9 +143,10 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
   - **DoD:** `hjkl`, `g`, `G`, `/`, `[`, `]` registered; focus cycles correctly.
   - **Testing:** e2e drives keys and asserts focused view name.
   - **Outcome:** `internal/tui/` ships layout + central binding table + pure focus cycle; `cli.Run` wires `tui.Run` and surfaces `ErrRequiresTTY` on non-TTY stdout. Integration tests use `gocui.NewGui(NewGuiOpts{Headless: true})` to drive focus transitions in-process (ADR 010). `j/k/g/G/`,`/`,`[`,`]` handlers are registered no-op stubs; real behaviour lands with the widgets in G2-task-2 and G4.
-- [ ] `views/repos.go` with searchable table + favourites
+- [x] `views/repos.go` with searchable table + favourites
   - **DoD:** renders projects, search filters in-place, favourite toggle persists.
   - **Testing:** e2e mirrors Python `test_app_launch.py`.
+  - **Outcome:** `internal/tui/views/repos.go` renders the project list with ☆/★ icons, vim-style cursor (`j/k/g/G`), substring search (`/` opens an editable `repos_search` pane, Enter submits, Esc cancels), and favourite toggle (`t`) that persists via `Config.Save` and re-sorts favourites first by `LastActivityAt` desc. `internal/gitlab/projects.go` ships the uncached `ListProjects` wrapper with pagination and Python-parity defaults (`membership=true, archived=false, order_by=last_activity_at, sort=desc`). `internal/tui/keymap/` holds the shared `Binding` type + pane-name constants so `internal/tui/views` contributes per-view bindings without importing `internal/tui` (import-cycle break). `internal/appcontext.AppContext` now carries `FS` + `ConfigPath` so the view can persist favourites under tests with afero. Parity gate `tests/e2e/repos_render_test.go` asserts rendering, in-place filter, and YAML persistence end-to-end (see ADR 011).
 
 ### Phase G3: Merge Requests List
 - [ ] `internal/gitlab/merge_requests.go`: List/Get/Approvals
@@ -178,6 +179,7 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
 - [ ] Apply `cache.Do[T]` to read-only GitLab functions in `internal/gitlab/*.go`
   - **DoD:** every read function (`ListProjects`, `GetProject`, `ListMergeRequests`, `GetMergeRequest`, `GetMRChanges`, `GetMRApprovals`, `GetLatestPipelineForMR`, `GetPipelineDetail`, `GetJobTrace`) routes through `cache.Do` with the namespace table in ADR 009.
   - **Testing:** unit tests with `-race` verifying concurrent reads deduplicate via the existing cache dedup path; integration test against `httptest.Server` asserting second identical call does NOT hit the server while fresh.
+  - **Partial progress (ahead of phase):** `ListProjects` already routes through `cache.Do` — `internal/gitlab/projects.go` gates on `c.cache != nil`, `WithCache(c)` option wires it from `cli.Run`, and `TestListProjects_CachedClient_ReusesResultOnSecondCall` asserts dedup. Remaining read functions still need the same wrapping when G6 proper lands.
 - [ ] Wire `ctx.Cache.InvalidateMR(projectID, mrIID)` after close/merge mutations (G5 work references this)
   - **DoD:** after a close/merge, the next read of any of the 7 MR namespaces re-fetches from GitLab.
   - **Testing:** unit test: cache MR, mutate, assert next read calls loader; e2e: close MR and observe list row disappears on next refocus.

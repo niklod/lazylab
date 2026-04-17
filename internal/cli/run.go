@@ -46,11 +46,6 @@ func Run(w io.Writer, opts ...RunOption) error {
 		return fmt.Errorf("run: load config: %w", err)
 	}
 
-	client, err := gitlab.New(cfg.GitLab)
-	if err != nil {
-		return fmt.Errorf("run: build gitlab client: %w", err)
-	}
-
 	c := cache.New(cfg.Cache, o.fs)
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), cacheShutdownBudget)
@@ -60,7 +55,12 @@ func Run(w io.Writer, opts ...RunOption) error {
 		}
 	}()
 
-	app := appcontext.New(cfg, client, c)
+	client, err := gitlab.New(cfg.GitLab, gitlab.WithCache(c))
+	if err != nil {
+		return fmt.Errorf("run: build gitlab client: %w", err)
+	}
+
+	app := appcontext.New(cfg, client, c, o.fs, o.configPath)
 
 	if err := tui.Run(context.Background(), app); err != nil {
 		return fmt.Errorf("run: tui: %w", err)
