@@ -11,10 +11,10 @@ Tasks for each phase live in `../../tasks.md` under the "Go Rewrite" section. Ev
 - Implement `internal/context/AppContext`.
 - Decide and record (ADR) which Go GitLab client library to use (candidate: `xanzy/go-gitlab`). Wrap in `internal/gitlab/client.go`.
 - Implement `internal/models/` for `User`, `Project`, `MergeRequest`, `Pipeline`, `ApprovalStatus`.
-- Implement `gt version` and `gt run` subcommands via flaggy.
+- Implement `lazylab version` and `lazylab run` subcommands via flaggy.
 - Port the file-backed cache (ADR 006) to `internal/cache/`.
 
-**Parity gate:** `gt version` prints the correct version; `gt run` exits cleanly with no TUI (or with a stub TUI) when config is valid.
+**Parity gate:** `lazylab version` prints the correct version; `lazylab run` exits cleanly with no TUI (or with a stub TUI) when config is valid.
 
 ## Phase G2 — Repositories Panel
 
@@ -68,4 +68,4 @@ Tasks for each phase live in `../../tasks.md` under the "Go Rewrite" section. Ev
 - CHANGELOG and README update.
 - **Cut-over:** merge `go-rewrite` → `master`. Delete Python code. Tag first Go release.
 
-**Parity gate:** full e2e suite green against Go binary. No Python runtime required to use `gt`.
+**Parity gate:** full e2e suite green against Go binary. No Python runtime required to use `lazylab`.

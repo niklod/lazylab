@@ -30,3 +30,9 @@ Thumbs.db
 uv.lock
 /CLAUDE.md
 /CLAUDE.original.md
+
+# Go
+/bin/
+/dist/
+*.test
+coverage.out

@@ -114,14 +114,14 @@
 Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationale, module mapping, and full phase plan.
 
 ### Phase G1: Scaffold + Config + API Client
-- [ ] Create Go module, Makefile (`build`/`lint`/`test`/`test-e2e`), golangci-lint + goreleaser configs
-  - **DoD:** `make build` produces `gt` binary; `make lint` clean on empty package.
-  - **Testing:** `make build && ./bin/gt version` prints expected string; CI matrix green.
+- [x] Create Go module, Makefile (`build`/`lint`/`test`/`test-e2e`), golangci-lint + goreleaser configs, `lazylab version` + `lazylab run` stub, e2e CLI tests
+  - **DoD:** `make build` produces `bin/lazylab`; `make lint` / `make test` / `make test-e2e` all clean; `goreleaser release --snapshot --clean` builds three-platform archives.
+  - **Testing:** subprocess-level e2e drives `lazylab version`, `lazylab run`, no-subcommand, unknown-subcommand, `--help`; unit tests cover the handler functions and error wrapping.
 - [ ] Implement `internal/config/` with yaml.v3 + adrg/xdg + dario.cat/mergo + afero
   - **DoD:** loads `~/.config/gitlab-tui/config.yaml`, applies defaults via mergo, reads token from env.
   - **Testing:** unit test with afero in-memory FS covering missing file, partial file, full file.
 - [ ] Implement `internal/context/AppContext`
-  - **DoD:** constructed in `cmd/gt/main.go`, carries config + gitlab client + current project, no globals.
+  - **DoD:** constructed in `cmd/lazylab/main.go`, carries config + gitlab client + current project, no globals.
   - **Testing:** unit test asserts fields wired; no package-level singletons in `go vet`.
 - [ ] Pick and document (ADR) the Go GitLab client library; implement `internal/gitlab/client.go`
   - **DoD:** thin wrapper with thread-safe client; e2e smoke hitting a fake HTTP server.
@@ -129,7 +129,7 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
 - [ ] Implement `internal/models/` (User, Project, MergeRequest, Pipeline, ApprovalStatus)
   - **DoD:** types mirror Python Pydantic fields; YAML/JSON round-trip tested.
   - **Testing:** table-driven unit tests per type.
-- [ ] Implement `gt version` and `gt run` subcommands via flaggy
+- [ ] Implement `lazylab version` and `lazylab run` subcommands via flaggy
   - **DoD:** both subcommands parse and exit with correct codes.
   - **Testing:** unit test on flaggy registration; e2e runs both commands.
 - [ ] Port file-backed cache (ADR 006) to `internal/cache/`
@@ -180,9 +180,9 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
 - [ ] Command palette, error handling improvements
   - **DoD:** palette lists registered commands; errors surface as toasts, not crashes.
   - **Testing:** e2e for palette invocation + error path.
-- [ ] GoReleaser config producing macOS/Linux binaries + Docker image
-  - **DoD:** `goreleaser release --snapshot --clean` succeeds locally.
-  - **Testing:** CI dry-run stage.
+- [ ] GoReleaser config producing macOS/Linux binaries + Docker image + release hardening
+  - **DoD:** `goreleaser release --snapshot --clean` succeeds locally; release artifacts are cosign-signed, SBOM (SPDX) generated, third-party actions in `release.yml` pinned by commit SHA, `id-token: write` granted to the release job.
+  - **Testing:** CI dry-run stage; verify `.sig` + `.sbom.spdx.json` present next to each archive; `cosign verify-blob` succeeds against a snapshot build.
 - [ ] Cut-over: merge `go-rewrite` → `master`, delete Python tree, tag release
   - **DoD:** full Python e2e scenarios pass against Go binary; no Python runtime required.
   - **Testing:** green CI + tagged release artefact.

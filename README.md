@@ -1,5 +1,7 @@
 # LazyLab
 
+> **Notice:** LazyLab is being rewritten from Python to Go 1.25. Active work lives on the `go-rewrite` branch. See [docs/migration/](docs/migration/) for the plan and status. The `master` branch stays on Python until cut-over.
+
 A terminal UI for GitLab, inspired by [lazygit](https://github.com/jesseduffield/lazygit). Browse repositories, review merge requests, view diffs, and monitor pipelines — all from your terminal.
 
 ## Features

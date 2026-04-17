@@ -6,7 +6,7 @@ Mapping from the Python package tree to the target Go layout. Used to make "wher
 
 ```
 cmd/
-  gt/
+  lazylab/
     main.go              # entry point, registers flaggy subcommands
 internal/
   cli/                   # CLI command handlers (run, version)
@@ -40,8 +40,8 @@ pkg/                     # (empty unless a package becomes safe to export)
 
 | Python (master) | Go (`go-rewrite`) | Notes |
 |-----------------|-------------------|-------|
-| `lazylab/__main__.py` | `cmd/gt/main.go` | Entry point. |
-| `lazylab/cli.py` (Click) | `internal/cli/` + `cmd/gt/main.go` (flaggy) | `gt run`, `gt version` subcommands. |
+| `lazylab/__main__.py` | `cmd/lazylab/main.go` | Entry point. |
+| `lazylab/cli.py` (Click) | `internal/cli/` + `cmd/lazylab/main.go` (flaggy) | `gt run`, `gt version` subcommands. |
 | `lazylab/version.py` | `internal/cli/version.go` or `//go:embed VERSION` | Single source of truth wired to goreleaser ldflags. |
 | `lazylab/lib/config.py` | `internal/config/` | YAML + XDG + mergo defaults. |
 | `lazylab/lib/context.py` | `internal/context/` | `AppContext` struct, not a global — injected explicitly. |
@@ -71,6 +71,6 @@ pkg/                     # (empty unless a package becomes safe to export)
 ## Rules
 
 - No cyclic imports between `internal/gitlab`, `internal/tui`, `internal/context`. Messages flow through `internal/messages`.
-- No global singletons. `AppContext` is constructed in `cmd/gt/main.go` and passed explicitly.
+- No global singletons. `AppContext` is constructed in `cmd/lazylab/main.go` and passed explicitly.
 - Pure domain types (`internal/models`) import nothing from `internal/gitlab` or `internal/tui`.
 - A new Go file that cannot be placed using the table above requires a new ADR or an extension of this table.

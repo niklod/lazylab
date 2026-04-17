@@ -14,7 +14,7 @@ Rewrite LazyLab from Python/Textual to Go 1.25 using `jesseduffield/gocui` on `g
 
 - Changing the UX. The Go build must feel identical to the Python build from the user's seat.
 - Changing the config file schema or path (`~/.config/gitlab-tui/config.yaml`).
-- Changing the CLI entry point name (`gt`).
+- Changing the CLI entry point name (`lazylab`).
 
 ## Strategy
 
@@ -26,7 +26,7 @@ Rewrite LazyLab from Python/Textual to Go 1.25 using `jesseduffield/gocui` on `g
 ## Parity criteria (cut-over gate)
 
 - Every phase's e2e test translated and passing in Go.
-- CLI surface identical: `gt run`, `gt version`, flags, exit codes.
+- CLI surface identical: `lazylab run`, `lazylab version`, flags, exit codes.
 - Config path and schema unchanged.
 - Cache path + format compatible, or explicit migration documented.
 - Goreleaser build producing macOS/Linux binaries and Docker image.

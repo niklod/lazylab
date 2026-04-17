@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [go-rewrite]
   pull_request:
-    branches: [master]
+    branches: [go-rewrite]
 
 jobs:
   lint:
@@ -12,68 +12,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: "3.11"
+          go-version: "1.25"
+          cache: true
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Ruff check
-        run: uvx ruff check .
-
-      - name: Pyright
-        run: uvx pyright
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install dependencies
-        run: uv sync
+          go-version: "1.25"
+          cache: true
 
       - name: Unit tests
-        run: uv run pytest tests/unit/ -v
+        run: make test
 
       - name: E2E tests
-        run: uv run pytest tests/e2e/ -v
+        run: make test-e2e
 
   build:
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Build package
-        run: uv build
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-go@v5
         with:
-          name: dist
-          path: dist/
+          go-version: "1.25"
+          cache: true
+
+      - name: Build
+        run: make build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lazylab-linux-amd64
+          path: bin/lazylab

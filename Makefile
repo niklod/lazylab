@@ -1,19 +1,19 @@
 .PHONY: build lint test test-e2e clean
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X github.com/niklod/lazylab/internal/version.version=$(VERSION)
+
 build:
-	uv sync
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/lazylab ./cmd/lazylab
 
 lint:
-	uvx ruff check --select I --fix .
-	uvx ruff check --fix .
-	uvx pyright
+	golangci-lint run
 
 test:
-	uv run pytest tests/unit/ -v
+	go test -race ./internal/... ./cmd/...
 
 test-e2e:
-	uv run pytest tests/e2e/ -v
+	go test -race -tags=e2e -count=1 ./tests/e2e/...
 
 clean:
-	rm -rf .venv build dist *.egg-info
-	find . -type d -name __pycache__ -exec rm -rf {} +
+	rm -rf bin/ dist/

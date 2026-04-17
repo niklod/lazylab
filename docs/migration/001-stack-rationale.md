@@ -35,7 +35,7 @@ Source-of-truth for package choices in the Go rewrite. Compressed summary in `~/
 |---------|-----|
 | `gopkg.in/yaml.v3` | YAML parser for `~/.config/gitlab-tui/config.yaml`. |
 | `adrg/xdg` | XDG base-dir lookup (`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`). |
-| `integrii/flaggy` | CLI flag parser with subcommand support. Matches `gt run` / `gt version` layout. |
+| `integrii/flaggy` | CLI flag parser with subcommand support. Matches `lazylab run` / `lazylab version` layout. |
 
 ## Search
 
