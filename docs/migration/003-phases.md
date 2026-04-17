@@ -9,7 +9,7 @@ Tasks for each phase live in `../../tasks.md` under the "Go Rewrite" section. Ev
 - Create Go module, Makefile targets (`build`/`lint`/`test`/`test-e2e`), golangci-lint config, goreleaser config.
 - Implement `internal/config/` (yaml.v3 + adrg/xdg + mergo for defaults, afero-backed I/O).
 - Implement `internal/context/AppContext`.
-- Decide and record (ADR) which Go GitLab client library to use (candidate: `xanzy/go-gitlab`). Wrap in `internal/gitlab/client.go`.
+- Decide and record (ADR) which Go GitLab client library to use. Wrap in `internal/gitlab/client.go`. (Chosen: `gitlab.com/gitlab-org/api/client-go` — ADR 008.)
 - Implement `internal/models/` for `User`, `Project`, `MergeRequest`, `Pipeline`, `ApprovalStatus`.
 - Implement `lazylab version` and `lazylab run` subcommands via flaggy.
 - Port the file-backed cache (ADR 006) to `internal/cache/`.

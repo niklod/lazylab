@@ -37,6 +37,12 @@ Source-of-truth for package choices in the Go rewrite. Compressed summary in `~/
 | ~~`adrg/xdg`~~ | Dropped — manual `XDG_CONFIG_HOME` + `$HOME/.config` fallback in `internal/config` keeps Python parity on macOS. See ADR 007. |
 | `integrii/flaggy` | CLI flag parser with subcommand support. Matches `lazylab run` / `lazylab version` layout. |
 
+## GitLab API
+
+| Package | Why |
+|---------|-----|
+| `gitlab.com/gitlab-org/api/client-go` | Official GitLab-maintained REST client (successor to `xanzy/go-gitlab`). Full endpoint coverage; wrapped behind `internal/gitlab.Client` for decoupling. See ADR 008. |
+
 ## Search
 
 | Package | Why |

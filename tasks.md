@@ -123,15 +123,16 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
 - [x] Implement `internal/appcontext/AppContext` (package renamed from `context` to avoid shadowing stdlib)
   - **DoD:** constructed in `cmd/lazylab/main.go`, carries config + current project, no globals. GitLab client field added by the gitlab-client task.
   - **Testing:** unit tests assert fields wired, `WithCurrentProject` returns a fresh copy (100% coverage).
-- [ ] Pick and document (ADR) the Go GitLab client library; implement `internal/gitlab/client.go`
+- [x] Pick and document (ADR) the Go GitLab client library; implement `internal/gitlab/client.go`
   - **DoD:** thin wrapper with thread-safe client; e2e smoke hitting a fake HTTP server.
   - **Testing:** unit test against `httptest.Server`; ADR committed in `docs/adr/`.
+  - **Outcome:** chose `gitlab.com/gitlab-org/api/client-go` (ADR 008). `internal/gitlab.Client` wraps it with URL/token validation and `WithHTTPClient` option for test injection; suite covers validation errors, upstream error wrap, and `httptest.Server` round-trip with `PRIVATE-TOKEN` header assertion.
 - [x] Implement `internal/models/` (User, Project, MergeRequest, Pipeline, PipelineJob, PipelineDetail, ApprovalStatus, DiscussionStats, MRDiffFile, MRDiffData + enums)
   - **DoD:** types mirror Python Pydantic fields 1:1; JSON round-trip tested; enum `IsValid`/state predicates added.
   - **Testing:** testify suites per file — round-trip + fixture decode + enum tables (100% coverage).
-- [ ] Implement `lazylab version` and `lazylab run` subcommands via flaggy
-  - **DoD:** both subcommands parse and exit with correct codes.
-  - **Testing:** unit test on flaggy registration; e2e runs both commands.
+- [x] Implement `lazylab version` and `lazylab run` subcommands via flaggy
+  - **DoD:** both subcommands parse and exit with correct codes; `run` loads config, builds GitLab client, constructs `AppContext`, and exits cleanly (no TUI).
+  - **Testing:** unit tests cover run happy-path, missing-config seed, invalid YAML wrap, client-build error wrap, write-error wrap. E2E covers version output, run happy-path with `LAZYLAB_CONFIG`, missing-token non-zero exit, help flag, and unknown subcommand.
 - [ ] Port file-backed cache (ADR 006) to `internal/cache/`
   - **DoD:** stale-while-revalidate identical semantics to Python; race-free under `-race`.
   - **Testing:** unit tests covering get/put/invalidate/refresh; `sasha-s/go-deadlock` guard in tests.

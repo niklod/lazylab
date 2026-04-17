@@ -50,7 +50,7 @@ pkg/                     # (empty unless a package becomes safe to export)
 | `lazylab/lib/messages.py` | `internal/messages/` | Typed event structs; dispatch via channel on the AppContext. |
 | `lazylab/lib/bindings.py` | `internal/tui/keys.go` | gocui key-binding registration helpers. |
 | `lazylab/lib/cache.py` | `internal/cache/` | Port the async-cache + stale-while-revalidate semantics from ADR 006 using goroutines. |
-| `lazylab/lib/gitlab/client.py` | `internal/gitlab/client.go` | Wrap a GitLab REST/GraphQL client. Confirm library choice in an ADR (python-gitlab has no direct Go equivalent). |
+| `lazylab/lib/gitlab/client.py` | `internal/gitlab/client.go` | Thin wrapper over `gitlab.com/gitlab-org/api/client-go`. See ADR 008. |
 | `lazylab/lib/gitlab/projects.py` | `internal/gitlab/projects.go` | 1:1 function mapping. |
 | `lazylab/lib/gitlab/merge_requests.py` | `internal/gitlab/merge_requests.go` | 1:1. |
 | `lazylab/lib/gitlab/pipelines.py` | `internal/gitlab/pipelines.go` | 1:1. |

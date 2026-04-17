@@ -75,9 +75,16 @@ func buildBinary() {
 }
 
 func (s *CLISuite) run(args ...string) (stdout, stderr string, exitCode int) {
+	return s.runWithEnv(nil, args...)
+}
+
+func (s *CLISuite) runWithEnv(extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	s.T().Helper()
 
 	cmd := exec.Command(s.binary, args...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -103,13 +110,38 @@ func (s *CLISuite) TestVersion_PrintsInjectedVersion() {
 	s.Require().Empty(stderr)
 }
 
-func (s *CLISuite) TestRun_PrintsStubAndExitsZero() {
-	stdout, stderr, code := s.run("run")
+func (s *CLISuite) TestRun_LoadsConfigAndExitsZero() {
+	dir := s.T().TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	s.Require().NoError(os.WriteFile(configPath, []byte(
+		"gitlab:\n  url: https://gitlab.example.com\n  token: e2e-secret\n",
+	), 0o600))
 
-	s.Require().Equal(0, code)
-	s.Require().Contains(stdout, "not yet implemented")
+	stdout, stderr, code := s.runWithEnv(
+		[]string{"LAZYLAB_CONFIG=" + configPath, "LAZYLAB_GITLAB_TOKEN="},
+		"run",
+	)
+
+	s.Require().Equal(0, code, "stderr: %s", stderr)
+	s.Require().Contains(stdout, "config loaded")
 	s.Require().Contains(stdout, "Phase G2")
 	s.Require().Empty(stderr)
+}
+
+func (s *CLISuite) TestRun_MissingTokenExitsNonZero() {
+	dir := s.T().TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	s.Require().NoError(os.WriteFile(configPath, []byte(
+		"gitlab:\n  url: https://gitlab.example.com\n  token: \"\"\n",
+	), 0o600))
+
+	_, stderr, code := s.runWithEnv(
+		[]string{"LAZYLAB_CONFIG=" + configPath, "LAZYLAB_GITLAB_TOKEN="},
+		"run",
+	)
+
+	s.Require().NotEqual(0, code)
+	s.Require().Contains(stderr, "token")
 }
 
 func (s *CLISuite) TestNoSubcommand_ExitsNonZeroAndPrintsHelp() {
