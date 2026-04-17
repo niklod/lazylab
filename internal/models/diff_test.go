@@ -43,5 +43,6 @@ func (s *DiffSuite) TestMRDiffData_EmptyFiles_RoundTrip() {
 }
 
 func TestDiffSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(DiffSuite))
 }

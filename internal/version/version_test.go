@@ -31,5 +31,6 @@ func (s *VersionSuite) TestString_ReturnsInjectedValue() {
 }
 
 func TestVersionSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(VersionSuite))
 }

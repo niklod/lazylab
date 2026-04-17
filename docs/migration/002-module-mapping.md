@@ -49,7 +49,7 @@ pkg/                     # (empty unless a package becomes safe to export)
 | `lazylab/lib/logging.py` | `internal/logging/` | logrus setup, humanlog hook in dev. |
 | `lazylab/lib/messages.py` | `internal/messages/` | Typed event structs; dispatch via channel on the AppContext. |
 | `lazylab/lib/bindings.py` | `internal/tui/keys.go` | gocui key-binding registration helpers. |
-| `lazylab/lib/cache.py` | `internal/cache/` | Port the async-cache + stale-while-revalidate semantics from ADR 006 using goroutines. |
+| `lazylab/lib/cache.py` | `internal/cache/` | Port the async-cache + stale-while-revalidate semantics from ADR 006 using goroutines. Generic `Do[T]` + silent background refresh (no TUI event) — see ADR 009. |
 | `lazylab/lib/gitlab/client.py` | `internal/gitlab/client.go` | Thin wrapper over `gitlab.com/gitlab-org/api/client-go`. See ADR 008. |
 | `lazylab/lib/gitlab/projects.py` | `internal/gitlab/projects.go` | 1:1 function mapping. |
 | `lazylab/lib/gitlab/merge_requests.py` | `internal/gitlab/merge_requests.go` | 1:1. |

@@ -12,6 +12,8 @@ import (
 	"github.com/niklod/lazylab/internal/gitlab"
 )
 
+const runTestConfigPath = "/cfg/config.yaml"
+
 type RunCommandSuite struct {
 	suite.Suite
 	buf *bytes.Buffer
@@ -23,15 +25,14 @@ func (s *RunCommandSuite) SetupTest() {
 	s.fs = afero.NewMemMapFs()
 }
 
-func (s *RunCommandSuite) writeConfig(path, yaml string) {
-	s.Require().NoError(afero.WriteFile(s.fs, path, []byte(yaml), 0o600))
+func (s *RunCommandSuite) writeConfig(yaml string) {
+	s.Require().NoError(afero.WriteFile(s.fs, runTestConfigPath, []byte(yaml), 0o600))
 }
 
 func (s *RunCommandSuite) TestRun_LoadsConfigAndReportsReady() {
-	path := "/cfg/config.yaml"
-	s.writeConfig(path, "gitlab:\n  url: https://gitlab.example.com\n  token: secret\n")
+	s.writeConfig("gitlab:\n  url: https://gitlab.example.com\n  token: secret\n")
 
-	err := cli.Run(s.buf, cli.WithFS(s.fs), cli.WithConfigPath(path))
+	err := cli.Run(s.buf, cli.WithFS(s.fs), cli.WithConfigPath(runTestConfigPath))
 
 	s.Require().NoError(err)
 	s.Require().Contains(s.buf.String(), "config loaded")
@@ -40,21 +41,19 @@ func (s *RunCommandSuite) TestRun_LoadsConfigAndReportsReady() {
 
 func (s *RunCommandSuite) TestRun_SeedsDefaultsWhenConfigMissing() {
 	s.T().Setenv(config.EnvGitLabToken, "env-token")
-	path := "/cfg/config.yaml"
 
-	err := cli.Run(s.buf, cli.WithFS(s.fs), cli.WithConfigPath(path))
+	err := cli.Run(s.buf, cli.WithFS(s.fs), cli.WithConfigPath(runTestConfigPath))
 
 	s.Require().NoError(err)
-	exists, statErr := afero.Exists(s.fs, path)
+	exists, statErr := afero.Exists(s.fs, runTestConfigPath)
 	s.Require().NoError(statErr)
 	s.Require().True(exists)
 }
 
 func (s *RunCommandSuite) TestRun_WrapsConfigLoadError() {
-	path := "/cfg/config.yaml"
-	s.writeConfig(path, "not: [valid")
+	s.writeConfig("not: [valid")
 
-	err := cli.Run(s.buf, cli.WithFS(s.fs), cli.WithConfigPath(path))
+	err := cli.Run(s.buf, cli.WithFS(s.fs), cli.WithConfigPath(runTestConfigPath))
 
 	s.Require().Error(err)
 	s.Require().ErrorContains(err, "run: load config")
@@ -62,10 +61,9 @@ func (s *RunCommandSuite) TestRun_WrapsConfigLoadError() {
 
 func (s *RunCommandSuite) TestRun_WrapsClientBuildError() {
 	s.T().Setenv(config.EnvGitLabToken, "")
-	path := "/cfg/config.yaml"
-	s.writeConfig(path, "gitlab:\n  url: \"\"\n  token: \"\"\n")
+	s.writeConfig("gitlab:\n  url: \"\"\n  token: \"\"\n")
 
-	err := cli.Run(s.buf, cli.WithFS(s.fs), cli.WithConfigPath(path))
+	err := cli.Run(s.buf, cli.WithFS(s.fs), cli.WithConfigPath(runTestConfigPath))
 
 	s.Require().Error(err)
 	s.Require().ErrorContains(err, "run: build gitlab client")
@@ -73,15 +71,15 @@ func (s *RunCommandSuite) TestRun_WrapsClientBuildError() {
 }
 
 func (s *RunCommandSuite) TestRun_WrapsWriteError() {
-	path := "/cfg/config.yaml"
-	s.writeConfig(path, "gitlab:\n  url: https://gitlab.example.com\n  token: secret\n")
+	s.writeConfig("gitlab:\n  url: https://gitlab.example.com\n  token: secret\n")
 
-	err := cli.Run(failingWriter{}, cli.WithFS(s.fs), cli.WithConfigPath(path))
+	err := cli.Run(failingWriter{}, cli.WithFS(s.fs), cli.WithConfigPath(runTestConfigPath))
 
 	s.Require().Error(err)
 	s.Require().ErrorContains(err, "run: write output")
 }
 
+//nolint:paralleltest // t.Setenv incompatible with parallel ancestors
 func TestRunCommandSuite(t *testing.T) {
 	suite.Run(t, new(RunCommandSuite))
 }

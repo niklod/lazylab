@@ -51,6 +51,7 @@ func New(cfg config.GitLabConfig, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gitlab: new client: %w", err)
 	}
+
 	return &Client{api: api}, nil
 }
 

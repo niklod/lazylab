@@ -53,5 +53,6 @@ func (s *VersionCommandSuite) TestVersion_WrapsWriteError() {
 }
 
 func TestVersionCommandSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(VersionCommandSuite))
 }

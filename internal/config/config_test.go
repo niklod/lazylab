@@ -190,6 +190,7 @@ func (s *ConfigSuite) TestSave_ReadOnlyFs_ReturnsWrappedError() {
 	s.Require().Error(err)
 }
 
+//nolint:paralleltest // t.Setenv incompatible with parallel ancestors
 func TestConfigSuite(t *testing.T) {
 	suite.Run(t, new(ConfigSuite))
 }

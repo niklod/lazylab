@@ -19,6 +19,7 @@ func DefaultConfigPath() string {
 	if p := os.Getenv(EnvConfigPath); p != "" {
 		return p
 	}
+
 	return filepath.Join(defaultAppDir(), configFileName)
 }
 
@@ -30,6 +31,7 @@ func defaultAppDir() string {
 	if err != nil {
 		return filepath.Join(".config", appDirName)
 	}
+
 	return filepath.Join(home, ".config", appDirName)
 }
 

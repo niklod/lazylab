@@ -43,5 +43,6 @@ func (s *ApprovalSuite) TestApproval_Unmarshal_EmptyApprovedBy() {
 }
 
 func TestApprovalSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(ApprovalSuite))
 }

@@ -1,17 +1,23 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/spf13/afero"
 
 	"github.com/niklod/lazylab/internal/appcontext"
+	"github.com/niklod/lazylab/internal/cache"
 	"github.com/niklod/lazylab/internal/config"
 	"github.com/niklod/lazylab/internal/gitlab"
 )
 
-const runReadyMessage = "lazylab: config loaded; TUI coming in Phase G2"
+const (
+	runReadyMessage     = "lazylab: config loaded; TUI coming in Phase G2"
+	cacheShutdownBudget = 2 * time.Second
+)
 
 type runOptions struct {
 	fs         afero.Fs
@@ -47,11 +53,21 @@ func Run(w io.Writer, opts ...RunOption) error {
 		return fmt.Errorf("run: build gitlab client: %w", err)
 	}
 
+	c := cache.New(cfg.Cache, o.fs)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), cacheShutdownBudget)
+		defer cancel()
+		if err := c.Shutdown(ctx); err != nil {
+			_, _ = fmt.Fprintf(w, "lazylab: cache shutdown: %v\n", err)
+		}
+	}()
+
 	// TODO(G2): hand AppContext to the TUI instead of discarding it.
-	_ = appcontext.New(cfg, client)
+	_ = appcontext.New(cfg, client, c)
 
 	if _, err := fmt.Fprintln(w, runReadyMessage); err != nil {
 		return fmt.Errorf("run: write output: %w", err)
 	}
+
 	return nil
 }

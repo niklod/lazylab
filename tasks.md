@@ -133,9 +133,10 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
 - [x] Implement `lazylab version` and `lazylab run` subcommands via flaggy
   - **DoD:** both subcommands parse and exit with correct codes; `run` loads config, builds GitLab client, constructs `AppContext`, and exits cleanly (no TUI).
   - **Testing:** unit tests cover run happy-path, missing-config seed, invalid YAML wrap, client-build error wrap, write-error wrap. E2E covers version output, run happy-path with `LAZYLAB_CONFIG`, missing-token non-zero exit, help flag, and unknown subcommand.
-- [ ] Port file-backed cache (ADR 006) to `internal/cache/`
-  - **DoD:** stale-while-revalidate identical semantics to Python; race-free under `-race`.
-  - **Testing:** unit tests covering get/put/invalidate/refresh; `sasha-s/go-deadlock` guard in tests.
+- [x] Port file-backed cache (ADR 006) to `internal/cache/`
+  - **DoD:** stale-while-revalidate semantics preserved; race-free under `-race`; generic `Do[T]` replaces `@cached(model=...)`; background refresh silent (no TUI event) per user UX requirement — see ADR 009.
+  - **Testing:** testify suites covering miss/hit/stale/refresh/dedup/invalidate/InvalidateMR/InvalidateAll/Shutdown/ctx-cancel/disk-round-trip/corrupt-file; all run under `-race`.
+  - **Outcome:** `internal/cache/` ships with `cache.Do[T]`, `MakeKey`, `Invalidate`, `InvalidateMR`, `InvalidateAll`, `Shutdown`. Wired into `AppContext.Cache` and `cli.Run` (deferred 2s shutdown). No call site uses it yet — applied to GitLab read functions in Phase G6.
 
 ### Phase G2: Repositories Panel
 - [ ] 3-pane gocui layout + vim-style key bindings in `internal/tui/keys.go`
@@ -173,9 +174,15 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
   - **Testing:** e2e for confirm/cancel on both actions.
 
 ### Phase G6: Caching
-- [ ] Port async cache + stale-while-revalidate to goroutines
-  - **DoD:** concurrent calls deduplicated; background refresh fires `CacheRefreshed`.
-  - **Testing:** unit with `-race`; e2e asserts UI auto-update after refresh.
+- [ ] Apply `cache.Do[T]` to read-only GitLab functions in `internal/gitlab/*.go`
+  - **DoD:** every read function (`ListProjects`, `GetProject`, `ListMergeRequests`, `GetMergeRequest`, `GetMRChanges`, `GetMRApprovals`, `GetLatestPipelineForMR`, `GetPipelineDetail`, `GetJobTrace`) routes through `cache.Do` with the namespace table in ADR 009.
+  - **Testing:** unit tests with `-race` verifying concurrent reads deduplicate via the existing cache dedup path; integration test against `httptest.Server` asserting second identical call does NOT hit the server while fresh.
+- [ ] Wire `ctx.Cache.InvalidateMR(projectID, mrIID)` after close/merge mutations (G5 work references this)
+  - **DoD:** after a close/merge, the next read of any of the 7 MR namespaces re-fetches from GitLab.
+  - **Testing:** unit test: cache MR, mutate, assert next read calls loader; e2e: close MR and observe list row disappears on next refocus.
+- [ ] Decide per-view polling for live status (pipeline candidate) — explicitly NOT a cache-level event
+  - **DoD:** if implemented, a pipeline view owns its ticker calling `Do` with a short TTL override or a forced-refresh path; no global `CacheRefreshed` event exists (guarded by ADR 009).
+  - **Testing:** view-level test: advance clock past poll interval, assert view re-renders with new data. Absence test: grep `internal/cache/` for `OnRefresh`/`CacheRefreshed`/`chan.*Event` — must be zero matches.
 
 ### Phase G7: Polish + Cut-Over
 - [ ] Command palette, error handling improvements

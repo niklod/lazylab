@@ -84,5 +84,6 @@ func (s *PipelineSuite) TestPipelineDetail_RoundTrip() {
 }
 
 func TestPipelineSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(PipelineSuite))
 }

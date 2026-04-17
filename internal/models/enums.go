@@ -17,6 +17,7 @@ func (s MRState) IsValid() bool {
 	case MRStateOpened, MRStateClosed, MRStateMerged:
 		return true
 	}
+
 	return false
 }
 
@@ -34,6 +35,7 @@ func (f MRStateFilter) IsValid() bool {
 	case MRStateFilterAll, MRStateFilterOpened, MRStateFilterClosed, MRStateFilterMerged:
 		return true
 	}
+
 	return false
 }
 
@@ -50,6 +52,7 @@ func (f MROwnerFilter) IsValid() bool {
 	case MROwnerFilterAll, MROwnerFilterMine, MROwnerFilterReviewer:
 		return true
 	}
+
 	return false
 }
 
@@ -77,6 +80,7 @@ func (s PipelineStatus) IsValid() bool {
 		PipelineStatusManual, PipelineStatusScheduled:
 		return true
 	}
+
 	return false
 }
 
@@ -85,5 +89,6 @@ func (s PipelineStatus) IsTerminal() bool {
 	case PipelineStatusSuccess, PipelineStatusFailed, PipelineStatusCanceled, PipelineStatusSkipped:
 		return true
 	}
+
 	return false
 }

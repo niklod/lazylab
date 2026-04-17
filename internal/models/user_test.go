@@ -42,5 +42,6 @@ func (s *UserSuite) TestUser_Unmarshal_FromFixture() {
 }
 
 func TestUserSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(UserSuite))
 }

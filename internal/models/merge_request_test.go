@@ -89,5 +89,6 @@ func (s *MergeRequestSuite) TestMergeRequest_Predicates_DelegateToState() {
 }
 
 func TestMergeRequestSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(MergeRequestSuite))
 }

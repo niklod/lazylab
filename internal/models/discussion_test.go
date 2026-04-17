@@ -25,5 +25,6 @@ func (s *DiscussionSuite) TestDiscussionStats_JSONRoundTrip() {
 }
 
 func TestDiscussionSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(DiscussionSuite))
 }

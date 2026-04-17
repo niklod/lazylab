@@ -57,5 +57,6 @@ func (s *ProjectSuite) TestProject_Unmarshal_FromFixture() {
 }
 
 func TestProjectSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(ProjectSuite))
 }

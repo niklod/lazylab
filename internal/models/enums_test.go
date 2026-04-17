@@ -129,5 +129,6 @@ func (s *EnumsSuite) TestPipelineStatus_IsTerminal() {
 }
 
 func TestEnumsSuite(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, new(EnumsSuite))
 }

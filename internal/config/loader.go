@@ -21,6 +21,7 @@ func Load(fs afero.Fs, path string) (*Config, error) {
 		}
 		applyEnvOverrides(defaults)
 		defaults.GitLab.normalize()
+
 		return defaults, nil
 	case err != nil:
 		return nil, fmt.Errorf("load config %s: %w", path, err)
@@ -35,6 +36,7 @@ func Load(fs afero.Fs, path string) (*Config, error) {
 	}
 	applyEnvOverrides(cfg)
 	cfg.GitLab.normalize()
+
 	return cfg, nil
 }
 

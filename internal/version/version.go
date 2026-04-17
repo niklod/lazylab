@@ -9,5 +9,6 @@ func String() string {
 func SetForTest(v string) func() {
 	original := version
 	version = v
+
 	return func() { version = original }
 }

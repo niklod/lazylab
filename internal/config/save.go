@@ -25,5 +25,6 @@ func (c *Config) Save(fs afero.Fs, path string) error {
 	if err := afero.WriteFile(fs, path, data, configFileMode); err != nil {
 		return fmt.Errorf("write config %s: %w", path, err)
 	}
+
 	return nil
 }

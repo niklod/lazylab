@@ -53,12 +53,12 @@ Tasks for each phase live in `../../tasks.md` under the "Go Rewrite" section. Ev
 
 ## Phase G6 — Caching
 
-- Port async cache with stale-while-revalidate (ADR 006) using goroutines + sync primitives.
-- `@cached`-equivalent decorator pattern (Go: higher-order wrapper function).
-- Apply to all read-only GitLab calls. Invalidate on mutations.
-- `CacheRefreshed` event propagation to active views.
+- Cache package already shipped in G1 (see ADR 009) with SWR + generic `Do[T]`.
+- G6 applies `cache.Do[T]` to all read-only GitLab calls in `internal/gitlab/*.go`.
+- Call `ctx.Cache.InvalidateMR(projectID, mrIID)` after mutations (done in G5).
+- **No global `CacheRefreshed` event.** Divergence from Python (ADR 009): background refresh updates cache silently; fresh data surfaces only on the next caller-driven read. If a specific view genuinely needs live refresh (pipeline status is the likely candidate), implement it as a per-view polling goroutine calling `Do` — do NOT re-introduce a cache-level event.
 
-**Parity gate:** cached project list test + MR invalidation test pass; background refresh updates the UI live.
+**Parity gate:** cached project list test + MR invalidation test pass; stale data remains visible until navigation/action (not auto-refreshed).
 
 ## Phase G7 — Polish and Cut-Over
 
