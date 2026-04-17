@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -70,4 +71,28 @@ func New(cfg config.GitLabConfig, opts ...Option) (*Client, error) {
 
 func (c *Client) API() *gogitlab.Client {
 	return c.api
+}
+
+// doCached wraps the `if c.cache == nil { pass-through } else { cache.Do }`
+// boilerplate every read method needs. The `label` is the human-readable op
+// name used in the wrapped cache error — e.g. "list merge requests" produces
+// `gitlab: cached list merge requests: <loader error>`.
+func doCached[T any](
+	ctx context.Context,
+	c *Client,
+	namespace, label string,
+	loader func(context.Context) (T, error),
+	args ...any,
+) (T, error) {
+	if c.cache == nil {
+		return loader(ctx)
+	}
+	v, err := cache.Do(ctx, c.cache, namespace, loader, args...)
+	if err != nil {
+		var zero T
+
+		return zero, fmt.Errorf("gitlab: cached %s: %w", label, err)
+	}
+
+	return v, nil
 }

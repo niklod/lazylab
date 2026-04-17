@@ -182,7 +182,7 @@ func (v *ReposView) Render(pane *gocui.View) {
 	}
 
 	if v.cursor >= 0 && v.cursor < len(v.filtered) {
-		pane.SetCursor(0, v.cursor)
+		placeCursor(pane, v.cursor, len(v.filtered))
 	}
 }
 

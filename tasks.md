@@ -149,12 +149,20 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
   - **Outcome:** `internal/tui/views/repos.go` renders the project list with ☆/★ icons, vim-style cursor (`j/k/g/G`), substring search (`/` opens an editable `repos_search` pane, Enter submits, Esc cancels), and favourite toggle (`t`) that persists via `Config.Save` and re-sorts favourites first by `LastActivityAt` desc. `internal/gitlab/projects.go` ships the uncached `ListProjects` wrapper with pagination and Python-parity defaults (`membership=true, archived=false, order_by=last_activity_at, sort=desc`). `internal/tui/keymap/` holds the shared `Binding` type + pane-name constants so `internal/tui/views` contributes per-view bindings without importing `internal/tui` (import-cycle break). `internal/appcontext.AppContext` now carries `FS` + `ConfigPath` so the view can persist favourites under tests with afero. Parity gate `tests/e2e/repos_render_test.go` asserts rendering, in-place filter, and YAML persistence end-to-end (see ADR 011).
 
 ### Phase G3: Merge Requests List
-- [ ] `internal/gitlab/merge_requests.go`: List/Get/Approvals
-  - **DoD:** 1:1 feature parity with Python equivalents; errors wrapped with context.
-  - **Testing:** unit tests against `httptest.Server`.
-- [ ] `views/mrs.go` with status icons + filters (state, mine, reviewer)
-  - **DoD:** filter toggles change the table content.
-  - **Testing:** e2e toggles each filter and snapshots the table.
+- [x] `internal/gitlab/merge_requests.go`: List/Get/Approvals + `GetCurrentUser`
+  - **DoD:** 1:1 feature parity with Python equivalents; errors wrapped with context; cache namespaces `mr_list`, `mr`, `mr_approvals`, `current_user` routed through `cache.Do`.
+  - **Testing:** unit tests against `httptest.Server` cover pagination, author/reviewer filter URL args, upstream error wrap, input validation, cached dedup, approvals `approved_by.user` decoding, and current user mapping.
+  - **Outcome:** thin wrappers over `gogitlab.MergeRequestsService` + `MergeRequestApprovalsService`; `ListMergeRequestsOptions` mirrors Python (`state`, `author_id`, `reviewer_id`). Optional filters skipped in `MakeKey` so cache keys match Python's None-skipping.
+- [ ] G3 follow-ups surfaced by parallel code review (not blocking — track and revisit when a third caller appears or the next phase touches the site)
+  - **DoD:** decide per-item keep/defer; each item either filed as its own ADR+task or explicitly declined here.
+  - **Testing:** race test for filter-cycle path (already added; see `TestMRsViewSuite`).
+  - `MakeKey` nil-skip footgun: optional-arg callers must tag their slots (see `intPtrArg`). Future fix — emit a sentinel for nil in `MakeKey` so positional identity is preserved without caller convention. Cache-layer change, schedule with G6.
+  - `handleCycleState`/`handleCycleOwner` use `context.Background()`. App-scoped cancellable context plumbing lands with G7 polish.
+  - `SearchableList[T]` abstraction: decline until G4 introduces a third searchable list (diff file tree). Two call sites is below the project's "three similar lines" threshold for extraction.
+- [x] `views/mrs.go` with status icons + filters (state, mine, reviewer)
+  - **DoD:** filter toggles rotate state (opened → merged → closed → all) and owner (all → mine → reviewer → all); each toggle re-fetches; search `/` filters in-place on title+author; Enter on repos pane drives MR load.
+  - **Testing:** unit suite (13 tests) for filter rotation, fetch happy-path, error wrapping, search, cursor, stale-load guard; e2e suite (4 tests) covers project-selection → MR render, state cycle, owner cycle (asserts `author_id=77` on the wire), and search.
+  - **Outcome:** view owns its own keymap + `mrs_search` ephemeral pane; `views.Views.selectProjectForMRs` is the cross-view wiring so neither view imports the other.
 
 ### Phase G4: MR Detail Tabs
 - [ ] Overview tab

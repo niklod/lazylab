@@ -1,6 +1,7 @@
 package views
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -272,6 +273,35 @@ func (s *ReposViewSuite) TestSubmitSearch_AppliesTrimmedQuery() {
 	s.Require().False(v.SearchActive())
 	s.Require().Len(v.filtered, 1)
 	s.Require().Equal("grp/bravo", v.filtered[0].PathWithNamespace)
+}
+
+func (s *ReposViewSuite) TestRender_CursorBeyondViewport_ScrollsAndCursorStaysInViewport() {
+	// Short pane: InnerHeight = 5 (height 7 − 2 for borders).
+	pane, err := s.g.SetView("scroll_test_pane", 0, 0, 20, 6, 0)
+	if err != nil && !strings.Contains(err.Error(), "unknown view") {
+		s.T().Fatalf("SetView: %v", err)
+	}
+
+	projects := make([]*models.Project, 0, 20)
+	for i := 0; i < 20; i++ {
+		projects = append(projects, &models.Project{ID: i, PathWithNamespace: fmt.Sprintf("grp/p%02d", i)})
+	}
+	v := NewRepos(s.g, s.app)
+	s.seed(v, projects)
+
+	v.mu.Lock()
+	v.cursor = 15
+	v.mu.Unlock()
+
+	v.Render(pane)
+
+	_, oy := pane.Origin()
+	_, innerH := pane.InnerSize()
+	_, cy := pane.Cursor()
+	s.Require().Positive(oy, "origin must scroll down when cursor is below viewport")
+	s.Require().Equal(v.cursor-oy, cy, "on-screen cursor row must be the content row minus origin")
+	s.Require().GreaterOrEqual(cy, 0, "on-screen cursor row non-negative")
+	s.Require().Less(cy, innerH, "on-screen cursor row within viewport height")
 }
 
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; parallel runs race.

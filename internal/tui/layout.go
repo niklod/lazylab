@@ -84,13 +84,23 @@ func renderPanes(g *gocui.Gui, v *views.Views) error {
 			pv.Title = p.title
 			pv.Wrap = false
 		}
-		if v != nil && p.name == ViewRepos {
+		if v != nil && p.name == ViewRepos && v.Repos != nil {
 			v.Repos.Render(pv)
+		}
+		if v != nil && p.name == ViewMRs && v.MRs != nil {
+			v.MRs.Render(pv)
 		}
 	}
 
-	if err := manageReposSearch(g, v, r.repos); err != nil {
-		return err
+	if v != nil && v.Repos != nil {
+		if err := manageSearchPane(g, keymap.ViewReposSearch, v.Repos.SearchActive(), r.repos); err != nil {
+			return err
+		}
+	}
+	if v != nil && v.MRs != nil {
+		if err := manageSearchPane(g, keymap.ViewMRsSearch, v.MRs.SearchActive(), r.mrs); err != nil {
+			return err
+		}
 	}
 
 	if g.CurrentView() == nil {
@@ -104,27 +114,24 @@ func renderPanes(g *gocui.Gui, v *views.Views) error {
 	return nil
 }
 
-// manageReposSearch mounts or removes the repos_search pane based on whether
-// the repos view reports an active search. The pane sits along the top of the
-// repos rectangle and is an editable single-line input.
-func manageReposSearch(g *gocui.Gui, v *views.Views, r rect) error {
-	if v == nil || v.Repos == nil {
-		return nil
-	}
-
-	if !v.Repos.SearchActive() {
-		if err := g.DeleteView(keymap.ViewReposSearch); err != nil && !goerrors.Is(err, gocui.ErrUnknownView) {
-			return fmt.Errorf("delete search view: %w", err)
+// manageSearchPane mounts or removes an ephemeral single-line search input
+// pinned to the top of its owning pane. The pane's existence is derived from
+// `active` (the owning view's SearchActive reading), so a missed DeleteView
+// from a handler self-heals on the next render tick.
+func manageSearchPane(g *gocui.Gui, viewName string, active bool, r rect) error {
+	if !active {
+		if err := g.DeleteView(viewName); err != nil && !goerrors.Is(err, gocui.ErrUnknownView) {
+			return fmt.Errorf("delete %s: %w", viewName, err)
 		}
 
 		return nil
 	}
 
-	searchRect := rect{x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y0 + searchPaneHeight}
-	sv, err := g.SetView(keymap.ViewReposSearch, searchRect.x0, searchRect.y0, searchRect.x1-1, searchRect.y1-1, 0)
+	sr := rect{x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y0 + searchPaneHeight}
+	sv, err := g.SetView(viewName, sr.x0, sr.y0, sr.x1-1, sr.y1-1, 0)
 	firstCreate := goerrors.Is(err, gocui.ErrUnknownView)
 	if err != nil && !firstCreate {
-		return fmt.Errorf("set search view: %w", err)
+		return fmt.Errorf("set %s: %w", viewName, err)
 	}
 	if firstCreate {
 		sv.Frame = true

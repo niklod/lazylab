@@ -6,7 +6,6 @@ import (
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
 
-	"github.com/niklod/lazylab/internal/cache"
 	"github.com/niklod/lazylab/internal/models"
 )
 
@@ -56,24 +55,13 @@ func ptr[T any](v T) *T { return &v }
 // resolved option fields so divergent call sites don't share state.
 func (c *Client) ListProjects(ctx context.Context, opts ListProjectsOptions) ([]*models.Project, error) {
 	r := opts.resolved()
-
 	loader := func(ctx context.Context) ([]*models.Project, error) {
 		return c.listProjectsRaw(ctx, r)
 	}
 
-	if c.cache == nil {
-		return loader(ctx)
-	}
-
-	ps, err := cache.Do(
-		ctx, c.cache, projectsCacheNamespace, loader,
+	return doCached(ctx, c, projectsCacheNamespace, "list projects", loader,
 		*r.Membership, *r.Archived, r.OrderBy, r.Sort,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("gitlab: cached list projects: %w", err)
-	}
-
-	return ps, nil
 }
 
 func (c *Client) listProjectsRaw(ctx context.Context, r ListProjectsOptions) ([]*models.Project, error) {

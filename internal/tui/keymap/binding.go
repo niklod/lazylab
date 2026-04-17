@@ -11,6 +11,7 @@ const (
 	ViewMRs         = "mrs"
 	ViewDetail      = "detail"
 	ViewReposSearch = "repos_search"
+	ViewMRsSearch   = "mrs_search"
 )
 
 // HandlerFunc matches gocui's keybinding handler signature.
