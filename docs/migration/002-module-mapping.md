@@ -44,7 +44,7 @@ pkg/                     # (empty unless a package becomes safe to export)
 | `lazylab/cli.py` (Click) | `internal/cli/` + `cmd/lazylab/main.go` (flaggy) | `gt run`, `gt version` subcommands. |
 | `lazylab/version.py` | `internal/cli/version.go` or `//go:embed VERSION` | Single source of truth wired to goreleaser ldflags. |
 | `lazylab/lib/config.py` | `internal/config/` | YAML + XDG + mergo defaults. |
-| `lazylab/lib/context.py` | `internal/context/` | `AppContext` struct, not a global — injected explicitly. |
+| `lazylab/lib/context.py` | `internal/appcontext/` | `AppContext` struct, not a global — injected explicitly. Package named `appcontext` to avoid shadowing stdlib `context`. |
 | `lazylab/lib/constants.py` | `internal/models/enums.go` (MR state, pipeline status) + per-view constants | Split: domain enums → `models`, UI symbols → view that uses them. |
 | `lazylab/lib/logging.py` | `internal/logging/` | logrus setup, humanlog hook in dev. |
 | `lazylab/lib/messages.py` | `internal/messages/` | Typed event structs; dispatch via channel on the AppContext. |

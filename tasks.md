@@ -117,18 +117,18 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
 - [x] Create Go module, Makefile (`build`/`lint`/`test`/`test-e2e`), golangci-lint + goreleaser configs, `lazylab version` + `lazylab run` stub, e2e CLI tests
   - **DoD:** `make build` produces `bin/lazylab`; `make lint` / `make test` / `make test-e2e` all clean; `goreleaser release --snapshot --clean` builds three-platform archives.
   - **Testing:** subprocess-level e2e drives `lazylab version`, `lazylab run`, no-subcommand, unknown-subcommand, `--help`; unit tests cover the handler functions and error wrapping.
-- [ ] Implement `internal/config/` with yaml.v3 + adrg/xdg + dario.cat/mergo + afero
-  - **DoD:** loads `~/.config/gitlab-tui/config.yaml`, applies defaults via mergo, reads token from env.
-  - **Testing:** unit test with afero in-memory FS covering missing file, partial file, full file.
-- [ ] Implement `internal/context/AppContext`
-  - **DoD:** constructed in `cmd/lazylab/main.go`, carries config + gitlab client + current project, no globals.
-  - **Testing:** unit test asserts fields wired; no package-level singletons in `go vet`.
+- [x] Implement `internal/config/` with yaml.v3 + dario.cat/mergo + afero (`XDG_CONFIG_HOME` env + home-dir fallback; adrg/xdg dropped for Python-parity on macOS, see ADR 007)
+  - **DoD:** loads `~/.config/lazylab/config.yaml`, applies defaults via mergo, reads token from `LAZYLAB_GITLAB_TOKEN`.
+  - **Testing:** unit test with afero in-memory FS covering missing file, partial file, full file, env override, invalid YAML, URL trailing-slash strip, save round-trip (85% coverage).
+- [x] Implement `internal/appcontext/AppContext` (package renamed from `context` to avoid shadowing stdlib)
+  - **DoD:** constructed in `cmd/lazylab/main.go`, carries config + current project, no globals. GitLab client field added by the gitlab-client task.
+  - **Testing:** unit tests assert fields wired, `WithCurrentProject` returns a fresh copy (100% coverage).
 - [ ] Pick and document (ADR) the Go GitLab client library; implement `internal/gitlab/client.go`
   - **DoD:** thin wrapper with thread-safe client; e2e smoke hitting a fake HTTP server.
   - **Testing:** unit test against `httptest.Server`; ADR committed in `docs/adr/`.
-- [ ] Implement `internal/models/` (User, Project, MergeRequest, Pipeline, ApprovalStatus)
-  - **DoD:** types mirror Python Pydantic fields; YAML/JSON round-trip tested.
-  - **Testing:** table-driven unit tests per type.
+- [x] Implement `internal/models/` (User, Project, MergeRequest, Pipeline, PipelineJob, PipelineDetail, ApprovalStatus, DiscussionStats, MRDiffFile, MRDiffData + enums)
+  - **DoD:** types mirror Python Pydantic fields 1:1; JSON round-trip tested; enum `IsValid`/state predicates added.
+  - **Testing:** testify suites per file — round-trip + fixture decode + enum tables (100% coverage).
 - [ ] Implement `lazylab version` and `lazylab run` subcommands via flaggy
   - **DoD:** both subcommands parse and exit with correct codes.
   - **Testing:** unit test on flaggy registration; e2e runs both commands.
