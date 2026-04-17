@@ -139,9 +139,10 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
   - **Outcome:** `internal/cache/` ships with `cache.Do[T]`, `MakeKey`, `Invalidate`, `InvalidateMR`, `InvalidateAll`, `Shutdown`. Wired into `AppContext.Cache` and `cli.Run` (deferred 2s shutdown). No call site uses it yet — applied to GitLab read functions in Phase G6.
 
 ### Phase G2: Repositories Panel
-- [ ] 3-pane gocui layout + vim-style key bindings in `internal/tui/keys.go`
+- [x] 3-pane gocui layout + vim-style key bindings in `internal/tui/keys.go`
   - **DoD:** `hjkl`, `g`, `G`, `/`, `[`, `]` registered; focus cycles correctly.
   - **Testing:** e2e drives keys and asserts focused view name.
+  - **Outcome:** `internal/tui/` ships layout + central binding table + pure focus cycle; `cli.Run` wires `tui.Run` and surfaces `ErrRequiresTTY` on non-TTY stdout. Integration tests use `gocui.NewGui(NewGuiOpts{Headless: true})` to drive focus transitions in-process (ADR 010). `j/k/g/G/`,`/`,`[`,`]` handlers are registered no-op stubs; real behaviour lands with the widgets in G2-task-2 and G4.
 - [ ] `views/repos.go` with searchable table + favourites
   - **DoD:** renders projects, search filters in-place, favourite toggle persists.
   - **Testing:** e2e mirrors Python `test_app_launch.py`.

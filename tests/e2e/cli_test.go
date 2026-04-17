@@ -110,22 +110,20 @@ func (s *CLISuite) TestVersion_PrintsInjectedVersion() {
 	s.Require().Empty(stderr)
 }
 
-func (s *CLISuite) TestRun_LoadsConfigAndExitsZero() {
+func (s *CLISuite) TestRun_LoadsConfigThenFailsWithoutTTY() {
 	dir := s.T().TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	s.Require().NoError(os.WriteFile(configPath, []byte(
 		"gitlab:\n  url: https://gitlab.example.com\n  token: e2e-secret\n",
 	), 0o600))
 
-	stdout, stderr, code := s.runWithEnv(
+	_, stderr, code := s.runWithEnv(
 		[]string{"LAZYLAB_CONFIG=" + configPath, "LAZYLAB_GITLAB_TOKEN="},
 		"run",
 	)
 
-	s.Require().Equal(0, code, "stderr: %s", stderr)
-	s.Require().Contains(stdout, "config loaded")
-	s.Require().Contains(stdout, "Phase G2")
-	s.Require().Empty(stderr)
+	s.Require().NotEqual(0, code)
+	s.Require().Contains(stderr, "requires an interactive terminal")
 }
 
 func (s *CLISuite) TestRun_MissingTokenExitsNonZero() {
