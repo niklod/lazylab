@@ -40,6 +40,6 @@ func exitOnErr(stderr io.Writer, err error) {
 	if err == nil {
 		return
 	}
-	fmt.Fprintln(stderr, err)
+	_, _ = fmt.Fprintln(stderr, err)
 	os.Exit(1)
 }
