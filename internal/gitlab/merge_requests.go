@@ -10,11 +10,13 @@ import (
 )
 
 const (
-	mrListCacheNamespace      = "mr_list"
-	mrCacheNamespace          = "mr"
-	mrApprovalsCacheNamespace = "mr_approvals"
+	mrListCacheNamespace        = "mr_list"
+	mrCacheNamespace            = "mr"
+	mrApprovalsCacheNamespace   = "mr_approvals"
+	mrDiscussionsCacheNamespace = "mr_discussions"
 
-	defaultMRsPerPage = 100
+	defaultMRsPerPage         = 100
+	defaultDiscussionsPerPage = 100
 )
 
 // ListMergeRequestsOptions mirrors the Python `list_merge_requests` arguments.
@@ -113,6 +115,71 @@ func (c *Client) GetMergeRequest(ctx context.Context, projectID, iid int, projec
 	}
 
 	return doCached(ctx, c, mrCacheNamespace, "get merge request", loader, projectID, iid)
+}
+
+// GetMRDiscussionStats aggregates resolvable/resolved counts across all
+// discussions on an MR. Mirrors Python `get_mr_discussion_stats`: a
+// discussion counts as resolvable iff its first note is resolvable; it
+// counts as resolved iff every resolvable note in that discussion is
+// resolved. Cached per (project_id, iid).
+func (c *Client) GetMRDiscussionStats(ctx context.Context, projectID, iid int) (*models.DiscussionStats, error) {
+	if projectID <= 0 || iid <= 0 {
+		return nil, fmt.Errorf("gitlab: get mr discussion stats: project id and iid required")
+	}
+
+	loader := func(ctx context.Context) (*models.DiscussionStats, error) {
+		return c.listMRDiscussionsRaw(ctx, projectID, iid)
+	}
+
+	return doCached(ctx, c, mrDiscussionsCacheNamespace, "get mr discussion stats", loader, projectID, iid)
+}
+
+func (c *Client) listMRDiscussionsRaw(ctx context.Context, projectID, iid int) (*models.DiscussionStats, error) {
+	listOpts := &gogitlab.ListMergeRequestDiscussionsOptions{
+		ListOptions: gogitlab.ListOptions{
+			Page:    1,
+			PerPage: int64(defaultDiscussionsPerPage),
+		},
+	}
+
+	stats := &models.DiscussionStats{}
+	for {
+		page, resp, err := c.api.Discussions.ListMergeRequestDiscussions(projectID, int64(iid), listOpts, gogitlab.WithContext(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("gitlab: list mr discussions page %d: %w", listOpts.Page, err)
+		}
+		for _, d := range page {
+			if d == nil || len(d.Notes) == 0 {
+				continue
+			}
+			if !d.Notes[0].Resolvable {
+				continue
+			}
+			stats.TotalResolvable++
+			if allResolvableResolved(d.Notes) {
+				stats.Resolved++
+			}
+		}
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		listOpts.Page = resp.NextPage
+	}
+
+	return stats, nil
+}
+
+func allResolvableResolved(notes []*gogitlab.Note) bool {
+	for _, n := range notes {
+		if n == nil || !n.Resolvable {
+			continue
+		}
+		if !n.Resolved {
+			return false
+		}
+	}
+
+	return true
 }
 
 // GetMRApprovals fetches approval status for an MR. Cached per (project_id, iid).

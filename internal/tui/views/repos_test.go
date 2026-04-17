@@ -36,7 +36,7 @@ func (s *ReposViewSuite) SetupTest() {
 	s.fs = afero.NewMemMapFs()
 	cfg := config.Defaults()
 	cfg.GitLab.URL = "https://gitlab.example.com"
-	cfg.GitLab.Token = "tok"
+	cfg.GitLab.Token = testGitLabToken
 	cfg.Repositories.Favorites = nil
 	client, err := gitlab.New(cfg.GitLab)
 	s.Require().NoError(err)

@@ -63,7 +63,7 @@ func (s *MRsViewSuite) buildView(handler http.HandlerFunc) {
 	s.fs = afero.NewMemMapFs()
 	cfg := config.Defaults()
 	cfg.GitLab.URL = s.srv.URL
-	cfg.GitLab.Token = "tok"
+	cfg.GitLab.Token = testGitLabToken
 	client, err := gitlab.New(cfg.GitLab, gitlab.WithHTTPClient(s.srv.Client()))
 	s.Require().NoError(err)
 	c := cache.New(cfg.Cache, s.fs)

@@ -10,17 +10,20 @@ import (
 	"github.com/niklod/lazylab/internal/tui/keymap"
 )
 
-// Views aggregates every per-pane widget. Phase G3 ships repos + mrs;
-// mr-detail tabs are added in G4.
+// Views aggregates every per-pane widget. Phase G4 adds the Detail pane
+// (overview sub-task); tab dispatch lands with the diff/conversation/pipeline
+// sub-tasks.
 type Views struct {
-	Repos *ReposView
-	MRs   *MRsView
+	Repos  *ReposView
+	MRs    *MRsView
+	Detail *DetailView
 }
 
 func New(g *gocui.Gui, app *appcontext.AppContext) *Views {
 	return &Views{
-		Repos: NewRepos(g, app),
-		MRs:   NewMRs(g, app),
+		Repos:  NewRepos(g, app),
+		MRs:    NewMRs(g, app),
+		Detail: NewDetail(g, app),
 	}
 }
 
@@ -42,6 +45,11 @@ func (v *Views) Bindings() []keymap.Binding {
 	}
 	if v.MRs != nil {
 		out = append(out, v.MRs.Bindings()...)
+		out = append(out, keymap.Binding{
+			View:    keymap.ViewMRs,
+			Key:     gocui.KeyEnter,
+			Handler: v.selectMRForDetail,
+		})
 	}
 
 	return out
@@ -97,6 +105,23 @@ func (v *Views) selectProjectForMRs(g *gocui.Gui, _ *gocui.View) error {
 	if _, err := g.SetCurrentView(keymap.ViewMRs); err != nil {
 		return fmt.Errorf("focus mrs pane: %w", err)
 	}
+
+	return nil
+}
+
+// selectMRForDetail populates the detail pane with the MR under the mrs-pane
+// cursor. Focus stays on the mrs pane — the detail pane has no bindings yet
+// (tabs land with the diff/conversation/pipeline sub-tasks), so moving focus
+// there would be a dead end. Global `h`/`l` still cycles focus manually.
+func (v *Views) selectMRForDetail(_ *gocui.Gui, _ *gocui.View) error {
+	if v.MRs == nil || v.Detail == nil {
+		return nil
+	}
+	mr := v.MRs.SelectedMR()
+	if mr == nil {
+		return nil
+	}
+	v.Detail.SetMR(v.MRs.CurrentProject(), mr)
 
 	return nil
 }

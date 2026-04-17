@@ -331,6 +331,68 @@ func (s *MergeRequestsSuite) TestGetMRApprovals_WrapsUpstreamError() {
 	s.Require().ErrorContains(err, "gitlab: get mr approvals")
 }
 
+func (s *MergeRequestsSuite) TestGetMRDiscussionStats_AggregatesResolvableAndResolved() {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[
+			{"id":"d1","notes":[{"id":1,"resolvable":true,"resolved":true}]},
+			{"id":"d2","notes":[{"id":2,"resolvable":true,"resolved":false}]},
+			{"id":"d3","notes":[{"id":3,"resolvable":true,"resolved":true},{"id":4,"resolvable":true,"resolved":true}]},
+			{"id":"d4","notes":[{"id":5,"resolvable":true,"resolved":true},{"id":6,"resolvable":true,"resolved":false}]},
+			{"id":"d5","notes":[{"id":7,"resolvable":false,"resolved":false}]},
+			{"id":"d6","notes":[]}
+		]`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+	)
+	s.Require().NoError(err)
+
+	stats, err := client.GetMRDiscussionStats(context.Background(), 42, 7)
+
+	s.Require().NoError(err)
+	s.Require().Contains(gotPath, "/projects/42/merge_requests/7/discussions")
+	s.Require().Equal(4, stats.TotalResolvable)
+	s.Require().Equal(2, stats.Resolved, "two discussions are fully resolved; one mixed-partial counts as unresolved")
+}
+
+func (s *MergeRequestsSuite) TestGetMRDiscussionStats_WrapsUpstreamError() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"500"}`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+	)
+	s.Require().NoError(err)
+
+	_, err = client.GetMRDiscussionStats(context.Background(), 42, 7)
+
+	s.Require().Error(err)
+	s.Require().ErrorContains(err, "gitlab: list mr discussions")
+}
+
+func (s *MergeRequestsSuite) TestGetMRDiscussionStats_ValidatesInputs() {
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: "https://gitlab.example", Token: "secret"},
+	)
+	s.Require().NoError(err)
+
+	_, err = client.GetMRDiscussionStats(context.Background(), 0, 7)
+	s.Require().Error(err)
+
+	_, err = client.GetMRDiscussionStats(context.Background(), 1, 0)
+	s.Require().Error(err)
+}
+
 func (s *MergeRequestsSuite) TestGetCurrentUser_MapsFields() {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

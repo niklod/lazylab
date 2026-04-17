@@ -82,13 +82,16 @@ func renderPanes(g *gocui.Gui, v *views.Views) error {
 		if firstCreate {
 			pv.Frame = true
 			pv.Title = p.title
-			pv.Wrap = false
+			pv.Wrap = p.name == ViewDetail
 		}
 		if v != nil && p.name == ViewRepos && v.Repos != nil {
 			v.Repos.Render(pv)
 		}
 		if v != nil && p.name == ViewMRs && v.MRs != nil {
 			v.MRs.Render(pv)
+		}
+		if v != nil && p.name == ViewDetail && v.Detail != nil {
+			v.Detail.Render(pv)
 		}
 	}
 
