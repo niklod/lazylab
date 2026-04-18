@@ -10,6 +10,7 @@ import (
 	"github.com/jesseduffield/gocui"
 
 	"github.com/niklod/lazylab/internal/tui/keymap"
+	"github.com/niklod/lazylab/internal/tui/theme"
 	"github.com/niklod/lazylab/internal/tui/views"
 )
 
@@ -311,8 +312,8 @@ func highlightFocused(g *gocui.Gui) {
 		painted[name] = struct{}{}
 		focused := name == current || (name == ViewDetail && currentInDetail)
 		if focused {
-			v.FrameColor = gocui.ColorGreen
-			v.TitleColor = gocui.ColorGreen
+			v.FrameColor = theme.ColorAccent
+			v.TitleColor = theme.ColorAccent
 
 			return
 		}

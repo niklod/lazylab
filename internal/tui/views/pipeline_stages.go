@@ -8,6 +8,7 @@ import (
 	"github.com/jesseduffield/gocui"
 
 	"github.com/niklod/lazylab/internal/models"
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 const (
@@ -196,7 +197,7 @@ func (p *PipelineStagesView) Render(pane *gocui.View) {
 
 	if p.lastPane != pane {
 		pane.Highlight = true
-		pane.SelBgColor = gocui.ColorGreen
+		pane.SelBgColor = theme.ColorAccent
 		pane.SelFgColor = gocui.ColorBlack
 		p.lastPane = pane
 	}

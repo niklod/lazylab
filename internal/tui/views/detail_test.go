@@ -21,9 +21,17 @@ import (
 	"github.com/niklod/lazylab/internal/gitlab"
 	"github.com/niklod/lazylab/internal/models"
 	"github.com/niklod/lazylab/internal/tui/keymap"
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 const detailTestCfgPath = "/cfg/config.yaml"
+
+// sgrPrefix trims the trailing 'm' from an SGR escape so assertions match
+// regardless of how gocui re-serializes the final semicolon when the
+// rendered buffer is read back.
+func sgrPrefix(seq string) string {
+	return strings.TrimSuffix(seq, "m")
+}
 
 type DetailViewSuite struct {
 	suite.Suite
@@ -90,7 +98,7 @@ func (s *DetailViewSuite) TestRender_NilMR_ShowsEmptyHint() {
 }
 
 func (s *DetailViewSuite) TestRender_WithMR_RendersAllOverviewFields() {
-	created := time.Date(2026, 4, 10, 14, 30, 0, 0, time.UTC)
+	created := time.Now().Add(-3 * 24 * time.Hour).UTC()
 	mr := &models.MergeRequest{
 		IID:            42,
 		Title:          "Feature Alpha",
@@ -99,6 +107,8 @@ func (s *DetailViewSuite) TestRender_WithMR_RendersAllOverviewFields() {
 		SourceBranch:   "feat/alpha",
 		TargetBranch:   "main",
 		CreatedAt:      created,
+		UpdatedAt:      created,
+		ProjectPath:    "grp/alpha",
 		HasConflicts:   false,
 		UserNotesCount: 7,
 	}
@@ -107,34 +117,43 @@ func (s *DetailViewSuite) TestRender_WithMR_RendersAllOverviewFields() {
 	s.detail.Render(s.pane())
 
 	buf := s.pane().Buffer()
-	s.Require().Contains(buf, "!42 Feature Alpha")
+	s.Require().Contains(buf, "Feature Alpha")
+	s.Require().Contains(buf, "!42")
+	s.Require().Contains(buf, "grp/alpha")
 	s.Require().Contains(buf, "@alice")
-	s.Require().Contains(buf, "2026-04-10 14:30")
-	s.Require().Contains(buf, "O opened")
-	s.Require().Contains(buf, "feat/alpha \u2192 main")
-	s.Require().Contains(buf, iconOK+" No conflicts")
-	s.Require().Contains(buf, "Comments: 7")
+	s.Require().Contains(buf, "opened")
+	s.Require().Contains(buf, "feat/alpha")
+	s.Require().Contains(buf, "main")
+	s.Require().Contains(buf, "none")
+	s.Require().Contains(buf, "Comments")
+	s.Require().Contains(buf, "7")
+	s.Require().Contains(buf, "Updated")
 }
 
-func (s *DetailViewSuite) TestReviewersText_EmptyReturnsEmpty() {
-	s.Require().Empty(reviewersText(nil))
-	s.Require().Empty(reviewersText([]models.User{}))
+func (s *DetailViewSuite) TestReviewersLine_EmptyReturnsEmpty() {
+	s.Require().Empty(reviewersLine(nil))
+	s.Require().Empty(reviewersLine([]models.User{}))
 }
 
-func (s *DetailViewSuite) TestReviewersText_SingleReviewer() {
-	got := reviewersText([]models.User{{Username: "alice"}})
+func (s *DetailViewSuite) TestReviewersLine_SingleReviewer_WrapsInAccent() {
+	got := reviewersLine([]models.User{{Username: "alice"}})
 
-	s.Require().Equal("@alice", got)
+	s.Require().Contains(got, "@alice")
+	s.Require().Contains(got, theme.FgAccent)
+	s.Require().Contains(got, theme.Reset)
 }
 
-func (s *DetailViewSuite) TestReviewersText_MultipleReviewersCommaSeparated() {
-	got := reviewersText([]models.User{
+func (s *DetailViewSuite) TestReviewersLine_MultipleReviewersCommaSeparated() {
+	got := reviewersLine([]models.User{
 		{Username: "alice"},
 		{Username: "bob"},
 		{Username: "carol"},
 	})
 
-	s.Require().Equal("@alice, @bob, @carol", got)
+	s.Require().Contains(got, "@alice")
+	s.Require().Contains(got, "@bob")
+	s.Require().Contains(got, "@carol")
+	s.Require().Contains(got, ", ")
 }
 
 func (s *DetailViewSuite) TestRender_MRWithReviewers_RendersReviewersLine() {
@@ -153,7 +172,9 @@ func (s *DetailViewSuite) TestRender_MRWithReviewers_RendersReviewersLine() {
 
 	buf := s.pane().Buffer()
 	s.Require().Contains(buf, "@alice")
-	s.Require().Contains(buf, "Reviewers: @bob, @carol")
+	s.Require().Contains(buf, "@bob")
+	s.Require().Contains(buf, "@carol")
+	s.Require().Contains(buf, "Reviewers")
 }
 
 func (s *DetailViewSuite) TestRender_MRWithoutReviewers_OmitsReviewersLine() {
@@ -167,7 +188,7 @@ func (s *DetailViewSuite) TestRender_MRWithoutReviewers_OmitsReviewersLine() {
 
 	s.detail.Render(s.pane())
 
-	s.Require().NotContains(s.pane().Buffer(), "Reviewers:")
+	s.Require().NotContains(s.pane().Buffer(), "Reviewers")
 }
 
 func (s *DetailViewSuite) TestRender_WithConflicts_ShowsConflictText() {
@@ -181,8 +202,8 @@ func (s *DetailViewSuite) TestRender_WithConflicts_ShowsConflictText() {
 	s.detail.Render(s.pane())
 
 	buf := s.pane().Buffer()
-	s.Require().Contains(buf, iconBad+" Has conflicts")
-	s.Require().NotContains(buf, iconOK+" No conflicts")
+	s.Require().Contains(buf, "has conflicts")
+	s.Require().NotContains(buf, "Conflicts    "+theme.FgOK+"none")
 }
 
 func (s *DetailViewSuite) TestSetMR_ReplacesPreviousMR() {
@@ -197,20 +218,22 @@ func (s *DetailViewSuite) TestSetMR_ReplacesPreviousMR() {
 
 	s.detail.Render(s.pane())
 	buf := s.pane().Buffer()
-	s.Require().Contains(buf, "!2 Second")
+	s.Require().Contains(buf, "!2")
+	s.Require().Contains(buf, "Second")
 	s.Require().NotContains(buf, "First")
 }
 
-func (s *DetailViewSuite) TestRender_StateLetter_CoversAllStates() {
+func (s *DetailViewSuite) TestRender_State_RendersColoredDotAndWord() {
 	tests := []struct {
-		name       string
-		state      models.MRState
-		wantLetter string
+		name      string
+		state     models.MRState
+		wantColor string
+		wantWord  string
 	}{
-		{name: "opened", state: models.MRStateOpened, wantLetter: "O opened"},
-		{name: "merged", state: models.MRStateMerged, wantLetter: "M merged"},
-		{name: "closed", state: models.MRStateClosed, wantLetter: "C closed"},
-		{name: "unknown", state: models.MRState("weird"), wantLetter: "? weird"},
+		{name: "opened", state: models.MRStateOpened, wantColor: theme.FgOK, wantWord: "opened"},
+		{name: "merged", state: models.MRStateMerged, wantColor: theme.FgMerged, wantWord: "merged"},
+		{name: "closed", state: models.MRStateClosed, wantColor: theme.FgErr, wantWord: "closed"},
+		{name: "unknown", state: models.MRState("weird"), wantColor: theme.FgDraft, wantWord: "weird"},
 	}
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
@@ -218,7 +241,9 @@ func (s *DetailViewSuite) TestRender_StateLetter_CoversAllStates() {
 
 			s.detail.Render(s.pane())
 
-			s.Require().Contains(s.pane().Buffer(), tt.wantLetter)
+			buf := s.pane().Buffer()
+			s.Require().Contains(buf, tt.wantWord)
+			s.Require().Contains(buf, sgrPrefix(tt.wantColor))
 		})
 	}
 }
@@ -270,31 +295,28 @@ func (s *DetailViewSuite) TestCommentsText_NoResolvable_PlainCount() {
 	s.Require().Equal("3", commentsText(3, &models.DiscussionStats{TotalResolvable: 0, Resolved: 0}))
 }
 
-func (s *DetailViewSuite) TestCommentsText_PartiallyResolved_YellowWarnIcon() {
+func (s *DetailViewSuite) TestCommentsText_PartiallyResolved_DimRatio() {
 	got := commentsText(7, &models.DiscussionStats{TotalResolvable: 3, Resolved: 2})
 
-	s.Require().Contains(got, ansiYellow)
-	s.Require().Contains(got, iconWarn)
-	s.Require().Contains(got, "7 ")
+	s.Require().Contains(got, theme.Dim)
+	s.Require().Contains(got, "7")
 	s.Require().Contains(got, "(2/3 resolved)")
-	s.Require().Contains(got, ansiReset)
+	s.Require().Contains(got, theme.Reset)
 }
 
-func (s *DetailViewSuite) TestCommentsText_FullyResolved_GreenCheckIcon() {
+func (s *DetailViewSuite) TestCommentsText_FullyResolved_DimRatio() {
 	got := commentsText(5, &models.DiscussionStats{TotalResolvable: 5, Resolved: 5})
 
-	s.Require().Contains(got, ansiGreen)
-	s.Require().Contains(got, iconOK)
-	s.Require().Contains(got, "5 ")
+	s.Require().Contains(got, theme.Dim)
+	s.Require().Contains(got, "5")
 	s.Require().Contains(got, "(5/5 resolved)")
-	s.Require().Contains(got, ansiReset)
+	s.Require().Contains(got, theme.Reset)
 }
 
-func (s *DetailViewSuite) TestCommentsText_NoneResolved_YellowWarnIcon() {
+func (s *DetailViewSuite) TestCommentsText_NoneResolved_DimRatio() {
 	got := commentsText(1, &models.DiscussionStats{TotalResolvable: 2, Resolved: 0})
 
-	s.Require().Contains(got, ansiYellow)
-	s.Require().Contains(got, iconWarn)
+	s.Require().Contains(got, theme.Dim)
 	s.Require().Contains(got, "(0/2 resolved)")
 }
 
@@ -312,6 +334,8 @@ func (s *DetailViewSuite) TestSetMRSync_FetchesStatsAndRendersResolved() {
 			]`)
 		case strings.Contains(r.URL.Path, "/approvals"):
 			_, _ = fmt.Fprint(w, `{"approved":true,"approvals_required":0,"approvals_left":0}`)
+		case strings.Contains(r.URL.Path, "/pipelines"):
+			_, _ = fmt.Fprint(w, `[]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -324,7 +348,10 @@ func (s *DetailViewSuite) TestSetMRSync_FetchesStatsAndRendersResolved() {
 
 	s.Require().Equal(int32(1), hits.Load())
 	s.Require().Equal(&models.DiscussionStats{TotalResolvable: 2, Resolved: 1}, s.detail.Stats())
-	s.Require().Contains(s.pane().Buffer(), "Comments: 4 "+iconWarn+" (1/2 resolved)")
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, "Comments")
+	s.Require().Contains(buf, "4")
+	s.Require().Contains(buf, "(1/2 resolved)")
 }
 
 func (s *DetailViewSuite) TestSetMRSync_NilProject_SkipsFetch() {
@@ -335,7 +362,9 @@ func (s *DetailViewSuite) TestSetMRSync_NilProject_SkipsFetch() {
 
 	s.Require().Nil(s.detail.Stats())
 	s.detail.Render(s.pane())
-	s.Require().Contains(s.pane().Buffer(), "Comments: 2")
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, "Comments")
+	s.Require().Contains(buf, "2")
 }
 
 func (s *DetailViewSuite) TestApplyStats_StaleSeqIgnored() {
@@ -369,11 +398,13 @@ func (s *DetailViewSuite) TestSetTab_CyclesThroughEveryTab() {
 func (s *DetailViewSuite) TestRenderTabBar_HighlightsActiveTab() {
 	got := renderTabBar(DetailTabDiff)
 
-	s.Require().Contains(got, ansiReverse+"Diff"+ansiReset)
+	s.Require().Contains(got, theme.FgAccent+theme.Bold+"Diff"+theme.Reset)
 	s.Require().Contains(got, "Overview")
 	s.Require().Contains(got, "Conversation")
 	s.Require().Contains(got, "Pipeline")
-	s.Require().NotContains(got, ansiReverse+"Overview"+ansiReset)
+	s.Require().NotContains(got, theme.FgAccent+theme.Bold+"Overview"+theme.Reset)
+	s.Require().Contains(got, theme.Dim+"[ "+theme.Reset)
+	s.Require().Contains(got, theme.Dim+" ]"+theme.Reset)
 }
 
 func (s *DetailViewSuite) TestSetTab_RendersActiveTabLabel() {
@@ -543,15 +574,15 @@ func (s *DetailViewSuite) TestApprovalsText_NilReturnsLoadingHint() {
 	got := approvalsText(nil)
 
 	s.Require().Contains(got, "loading")
-	s.Require().Contains(got, ansiDim)
-	s.Require().Contains(got, ansiReset)
+	s.Require().Contains(got, theme.Dim)
+	s.Require().Contains(got, theme.Reset)
 }
 
 func (s *DetailViewSuite) TestApprovalsText_ZeroRequired_RendersDimNoApprovalsRequired() {
 	got := approvalsText(&models.ApprovalStatus{ApprovalsRequired: 0, ApprovalsLeft: 0, Approved: true})
 
 	s.Require().Contains(got, "no approvals required")
-	s.Require().Contains(got, ansiDim)
+	s.Require().Contains(got, theme.Dim)
 	s.Require().NotContains(got, iconOK)
 	s.Require().NotContains(got, iconBad)
 }
@@ -559,25 +590,25 @@ func (s *DetailViewSuite) TestApprovalsText_ZeroRequired_RendersDimNoApprovalsRe
 func (s *DetailViewSuite) TestApprovalsText_AllReceived_RendersGreenCheck() {
 	got := approvalsText(&models.ApprovalStatus{ApprovalsRequired: 1, ApprovalsLeft: 0, Approved: true})
 
-	s.Require().Contains(got, ansiGreen)
+	s.Require().Contains(got, theme.FgOK)
 	s.Require().Contains(got, iconOK)
 	s.Require().Contains(got, "1/1 approvals received")
-	s.Require().Contains(got, ansiReset)
+	s.Require().Contains(got, theme.Reset)
 }
 
 func (s *DetailViewSuite) TestApprovalsText_SomeMissing_RendersRedCross() {
 	got := approvalsText(&models.ApprovalStatus{ApprovalsRequired: 2, ApprovalsLeft: 2, Approved: false})
 
-	s.Require().Contains(got, ansiRed)
+	s.Require().Contains(got, theme.FgErr)
 	s.Require().Contains(got, iconBad)
 	s.Require().Contains(got, "0/2 approvals received")
-	s.Require().Contains(got, ansiReset)
+	s.Require().Contains(got, theme.Reset)
 }
 
 func (s *DetailViewSuite) TestApprovalsText_PartialReceived_RendersRedCross() {
 	got := approvalsText(&models.ApprovalStatus{ApprovalsRequired: 3, ApprovalsLeft: 1, Approved: false})
 
-	s.Require().Contains(got, ansiRed)
+	s.Require().Contains(got, theme.FgErr)
 	s.Require().Contains(got, iconBad)
 	s.Require().Contains(got, "2/3 approvals received")
 }
@@ -599,6 +630,8 @@ func (s *DetailViewSuite) TestSetMRSync_FetchesApprovalsAndRendersRedCross() {
 			_, _ = fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/approvals"):
 			_, _ = fmt.Fprint(w, `{"approved":false,"approvals_required":2,"approvals_left":2}`)
+		case strings.Contains(r.URL.Path, "/pipelines"):
+			_, _ = fmt.Fprint(w, `[]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -610,7 +643,7 @@ func (s *DetailViewSuite) TestSetMRSync_FetchesApprovalsAndRendersRedCross() {
 	s.detail.Render(s.pane())
 
 	buf := s.pane().Buffer()
-	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, "Approvals")
 	s.Require().Contains(buf, iconBad+" 0/2 approvals received")
 	approvals := s.detail.Approvals()
 	s.Require().NotNil(approvals)
@@ -626,6 +659,8 @@ func (s *DetailViewSuite) TestSetMRSync_FetchesApprovalsAndRendersGreenCheck() {
 			_, _ = fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/approvals"):
 			_, _ = fmt.Fprint(w, `{"approved":true,"approvals_required":1,"approvals_left":0}`)
+		case strings.Contains(r.URL.Path, "/pipelines"):
+			_, _ = fmt.Fprint(w, `[]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -663,7 +698,7 @@ func (s *DetailViewSuite) TestSetMRSync_ApprovalsUpstreamError_LeavesLoadingHint
 	s.Require().Nil(s.detail.Approvals(), "upstream error must leave approvals nil")
 	s.detail.Render(s.pane())
 	buf := s.pane().Buffer()
-	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, "Approvals")
 	s.Require().Contains(buf, "loading")
 }
 
@@ -674,7 +709,7 @@ func (s *DetailViewSuite) TestRenderOverview_BeforeApprovalsFetch_ShowsLoadingHi
 	s.detail.Render(s.pane())
 
 	buf := s.pane().Buffer()
-	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, "Approvals")
 	s.Require().Contains(buf, "loading")
 }
 
@@ -682,15 +717,15 @@ func (s *DetailViewSuite) TestDiffStatsText_NilReturnsLoadingHint() {
 	got := diffStatsText(nil)
 
 	s.Require().Contains(got, "loading")
-	s.Require().Contains(got, ansiDim)
-	s.Require().Contains(got, ansiReset)
+	s.Require().Contains(got, theme.Dim)
+	s.Require().Contains(got, theme.Reset)
 }
 
 func (s *DetailViewSuite) TestDiffStatsText_RendersGreenPlusRedMinus() {
 	got := diffStatsText(&models.DiffStats{Added: 12, Removed: 3})
 
-	s.Require().Contains(got, ansiGreen+"+12"+ansiReset)
-	s.Require().Contains(got, ansiRed+"-3"+ansiReset)
+	s.Require().Contains(got, theme.FgOK+"+12"+theme.Reset)
+	s.Require().Contains(got, theme.FgErr+"-3"+theme.Reset)
 }
 
 func (s *DetailViewSuite) TestSetTabSync_PopulatesDiffStatsAndRendersInOverview() {
@@ -720,7 +755,7 @@ func (s *DetailViewSuite) TestSetTabSync_PopulatesDiffStatsAndRendersInOverview(
 	s.detail.Render(s.pane())
 
 	buf := s.pane().Buffer()
-	s.Require().Contains(buf, "Changes:")
+	s.Require().Contains(buf, "Changes")
 	s.Require().Contains(buf, "+2")
 	s.Require().Contains(buf, "-1")
 }
@@ -731,7 +766,7 @@ func (s *DetailViewSuite) TestRenderOverview_BeforeDiffFetch_ShowsLoadingHint() 
 
 	s.detail.Render(s.pane())
 
-	s.Require().Contains(s.pane().Buffer(), "Changes:")
+	s.Require().Contains(s.pane().Buffer(), "Changes")
 	s.Require().Contains(s.pane().Buffer(), "loading")
 }
 

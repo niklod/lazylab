@@ -8,6 +8,7 @@ import (
 	"github.com/jesseduffield/gocui"
 
 	"github.com/niklod/lazylab/internal/models"
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 const (
@@ -190,7 +191,7 @@ func (d *DiffTreeView) Render(pane *gocui.View) {
 
 	if d.lastPane != pane {
 		pane.Highlight = true
-		pane.SelBgColor = gocui.ColorGreen
+		pane.SelBgColor = theme.ColorAccent
 		pane.SelFgColor = gocui.ColorBlack
 		d.lastPane = pane
 	}

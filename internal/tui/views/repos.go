@@ -21,6 +21,7 @@ import (
 	"github.com/niklod/lazylab/internal/gitlab"
 	"github.com/niklod/lazylab/internal/models"
 	"github.com/niklod/lazylab/internal/tui/keymap"
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 const (
@@ -155,7 +156,7 @@ func (v *ReposView) Render(pane *gocui.View) {
 
 	pane.Clear()
 	pane.Highlight = true
-	pane.SelBgColor = gocui.ColorGreen
+	pane.SelBgColor = theme.ColorAccent
 	pane.SelFgColor = gocui.ColorBlack
 
 	switch {

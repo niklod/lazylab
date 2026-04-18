@@ -155,7 +155,7 @@ func (s *DiffTreeSuite) TestFileStatusLabel_CoversEveryBranch() {
 	}
 
 	for _, tt := range tests {
-		s.T().Run(tt.name, func(_ *testing.T) {
+		s.Run(tt.name, func() {
 			got := fileStatusLabel(&tt.file)
 			s.Require().Contains(got, tt.want)
 		})

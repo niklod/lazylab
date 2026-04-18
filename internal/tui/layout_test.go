@@ -5,6 +5,8 @@ import (
 
 	"github.com/jesseduffield/gocui"
 	"github.com/stretchr/testify/require"
+
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 func TestPaneRects_StandardTerminal(t *testing.T) {
@@ -94,8 +96,8 @@ func TestHighlightFocused_LightsDetailFrameForDetailFamily(t *testing.T) {
 
 	detail, err := g.View(ViewDetail)
 	require.NoError(t, err)
-	require.Equal(t, gocui.ColorGreen, detail.FrameColor,
-		"detail frame must stay green while a sub-pane is focused")
+	require.Equal(t, theme.ColorAccent, detail.FrameColor,
+		"detail frame must stay accent while a sub-pane is focused")
 
 	repos, err := g.View(ViewRepos)
 	require.NoError(t, err)

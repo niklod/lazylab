@@ -5,42 +5,37 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jesseduffield/gocui"
 
 	"github.com/niklod/lazylab/internal/appcontext"
 	"github.com/niklod/lazylab/internal/models"
 	"github.com/niklod/lazylab/internal/tui/keymap"
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 const (
 	detailStatusEmpty = "Select a merge request."
-	detailDateFormat  = "2006-01-02 15:04"
-	detailBranchesSep = " \u2192 "
+	detailBranchesSep = "  \u2192  "
 
-	// ANSI SGR escapes; gocui was built with OutputTrue (see internal/tui/app.go)
-	// and forwards escape sequences in the pane buffer to the terminal.
-	ansiReset   = "\x1b[0m"
-	ansiBold    = "\x1b[1m"
-	ansiDim     = "\x1b[2m"
-	ansiReverse = "\x1b[7m"
-	ansiRed     = "\x1b[31m"
-	ansiGreen   = "\x1b[32m"
-	ansiYellow  = "\x1b[33m"
-	ansiCyan    = "\x1b[36m"
+	iconOK  = "\u2713" // ✓
+	iconBad = "\u2717" // ✗
 
-	iconOK   = "\u2713" // ✓
-	iconBad  = "\u2717" // ✗
-	iconWarn = "\u26A0" // ⚠
-
-	detailNoConflicts  = ansiGreen + iconOK + " No conflicts" + ansiReset
-	detailHasConflicts = ansiRed + iconBad + " Has conflicts" + ansiReset
-
-	detailTabSeparator = " | "
+	// detailKeyWidth is the padding applied to the fixed left column in the
+	// Overview table. Design (design/project/wireframes/overview.js) uses a
+	// 12-char key column so the eye can scan values top to bottom.
+	detailKeyWidth = 12
+	detailDescRule = "─────────────────────────────────────────────────────────────────────────"
 
 	detailDiffLoading      = "Loading diff…"
 	detailDiffEmpty        = "No files changed in this merge request."
 	detailConversationStub = "Conversation tab — not yet implemented."
+)
+
+var (
+	detailNoConflicts  = theme.Wrap(theme.FgOK, "none")
+	detailHasConflicts = theme.Wrap(theme.FgErr, "has conflicts")
 )
 
 // DetailTab identifies which sub-tab the detail pane is currently showing.
@@ -107,6 +102,7 @@ type DetailView struct {
 	pipelineDetail  *models.PipelineDetail
 	pipelineSeq     uint64
 	pipelineLoading bool
+	pipelineLoaded  bool
 	pipelineErr     error
 
 	logOpen    bool
@@ -147,7 +143,7 @@ func (d *DetailView) ConsumePendingFocus() string {
 // stats fetch. No fetch happens if project is nil or the view has no
 // GitLab client (tests that instantiate DetailView without an app skip it).
 func (d *DetailView) SetMR(project *models.Project, mr *models.MergeRequest) {
-	statsSeq, approvalsSeq, projectID, iid := d.commitMR(project, mr)
+	statsSeq, approvalsSeq, _, projectID, iid := d.commitMR(project, mr)
 	if projectID == 0 || d.app == nil || d.app.GitLab == nil || d.g == nil {
 		return
 	}
@@ -157,13 +153,16 @@ func (d *DetailView) SetMR(project *models.Project, mr *models.MergeRequest) {
 	// the same payload the Diff tab consumes, so the fetch doubles as the
 	// stats source. cache.Do dedupes when the user actually opens Diff.
 	d.fetchDiffAsync(context.Background(), project, mr)
+	// Overview also surfaces the pipeline status, so prefetch here and let
+	// cache.Do dedupe when the user later opens the Pipeline tab.
+	d.fetchPipelineAsync(context.Background(), project, mr)
 }
 
 // SetMRSync applies an MR and fetches stats inline. Test-only entry point
 // that mirrors MRsView.SetProjectSync so tests running without MainLoop
 // observe both fields deterministically.
 func (d *DetailView) SetMRSync(ctx context.Context, project *models.Project, mr *models.MergeRequest) error {
-	statsSeq, approvalsSeq, projectID, iid := d.commitMR(project, mr)
+	statsSeq, approvalsSeq, pipelineSeq, projectID, iid := d.commitMR(project, mr)
 	if projectID == 0 || d.app == nil || d.app.GitLab == nil {
 		return nil
 	}
@@ -177,6 +176,15 @@ func (d *DetailView) SetMRSync(ctx context.Context, project *models.Project, mr 
 	d.applyApprovals(approvalsSeq, approvals, err)
 	if err != nil {
 		return fmt.Errorf("detail: fetch mr approvals: %w", err)
+	}
+
+	// commitMR set pipelineLoaded=false on the assumption a fetch would follow.
+	// SetMRSync must honour that contract so the Overview Pipeline row
+	// resolves off "loading…" in tests that observe the sync path.
+	pipeline, err := d.app.GitLab.GetMRPipelineDetail(ctx, projectID, iid)
+	d.applyPipeline(pipelineSeq, pipeline, err)
+	if err != nil {
+		return fmt.Errorf("detail: fetch mr pipeline: %w", err)
 	}
 
 	return nil
@@ -388,7 +396,7 @@ func (d *DetailView) Render(pane *gocui.View) {
 	}
 }
 
-func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) (statsSeq, approvalsSeq uint64, projectID, iid int) {
+func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) (statsSeq, approvalsSeq, pipelineSeq uint64, projectID, iid int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -412,6 +420,12 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 	d.pipelineDetail = nil
 	d.pipelineLoading = false
 	d.pipelineErr = nil
+	// Overview distinguishes "loading…" (fetch in flight) from "no pipeline"
+	// (fetch completed, MR has none). When no fetch can fire — no project, no
+	// GitLab client — flip loaded=true so the row shows a final value instead
+	// of an indefinite spinner.
+	willFetchPipeline := project != nil && project.ID != 0 && d.app != nil && d.app.GitLab != nil
+	d.pipelineLoaded = !willFetchPipeline
 	if d.pipelineStages != nil {
 		d.pipelineStages.ShowLoading()
 	}
@@ -432,10 +446,10 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 		pid = project.ID
 	}
 	if mr == nil {
-		return d.statsSeq, d.approvalsSeq, 0, 0
+		return d.statsSeq, d.approvalsSeq, d.pipelineSeq, 0, 0
 	}
 
-	return d.statsSeq, d.approvalsSeq, pid, mr.IID
+	return d.statsSeq, d.approvalsSeq, d.pipelineSeq, pid, mr.IID
 }
 
 // renderOverviewLocked rebuilds the cached Overview body from the current
@@ -446,7 +460,16 @@ func (d *DetailView) renderOverviewLocked() string {
 		return ""
 	}
 
-	return renderOverview(d.mr, d.stats, d.diffStats, d.approvals)
+	return renderOverview(overviewState{
+		mr:             d.mr,
+		stats:          d.stats,
+		diffStats:      d.diffStats,
+		approvals:      d.approvals,
+		pipelineLoaded: d.pipelineLoaded,
+		pipelineDetail: d.pipelineDetail,
+		pipelineErr:    d.pipelineErr,
+		now:            time.Now(),
+	})
 }
 
 func (d *DetailView) fetchStats(ctx context.Context, seq uint64, projectID, iid int) {
@@ -607,6 +630,8 @@ func (d *DetailView) applyPipeline(seq uint64, detail *models.PipelineDetail, er
 	d.pipelineLoading = false
 	if err != nil {
 		d.pipelineErr = err
+		d.pipelineLoaded = true
+		d.cached = d.renderOverviewLocked()
 		if d.pipelineStages != nil {
 			d.pipelineStages.ShowError(err.Error())
 		}
@@ -614,6 +639,8 @@ func (d *DetailView) applyPipeline(seq uint64, detail *models.PipelineDetail, er
 		return
 	}
 	d.pipelineDetail = detail
+	d.pipelineLoaded = true
+	d.cached = d.renderOverviewLocked()
 	if d.pipelineStages != nil {
 		d.pipelineStages.SetDetail(detail)
 	}
@@ -749,63 +776,199 @@ func focusTargetForTab(tab DetailTab) string {
 	return keymap.ViewDetail
 }
 
+// renderTabBar paints the Overview|Diff|Conversation|Pipeline bar at the
+// top of the detail pane. Design: dim brackets and separators, active tab
+// in accent bold. Source: design/project/wireframes/overview.js.
 func renderTabBar(active DetailTab) string {
 	var sb strings.Builder
-	sb.Grow(64)
+	sb.Grow(96)
+	sb.WriteString(theme.Dim)
+	sb.WriteString("[ ")
+	sb.WriteString(theme.Reset)
 	for i, label := range detailTabLabels {
 		if i > 0 {
-			sb.WriteString(detailTabSeparator)
+			sb.WriteString(theme.Dim)
+			sb.WriteString(" | ")
+			sb.WriteString(theme.Reset)
 		}
 		if DetailTab(i) == active {
-			sb.WriteString(ansiReverse)
+			sb.WriteString(theme.FgAccent)
+			sb.WriteString(theme.Bold)
 			sb.WriteString(label)
-			sb.WriteString(ansiReset)
+			sb.WriteString(theme.Reset)
 		} else {
 			sb.WriteString(label)
 		}
 	}
+	sb.WriteString(theme.Dim)
+	sb.WriteString(" ]")
+	sb.WriteString(theme.Reset)
 
 	return sb.String()
 }
 
-func renderOverview(mr *models.MergeRequest, stats *models.DiscussionStats, diffStats *models.DiffStats, approvals *models.ApprovalStatus) string {
+// overviewState bundles the inputs renderOverview needs. Exposed as a
+// struct (vs. a long positional list) so tests construct deterministic
+// snapshots via named fields.
+type overviewState struct {
+	mr             *models.MergeRequest
+	stats          *models.DiscussionStats
+	diffStats      *models.DiffStats
+	approvals      *models.ApprovalStatus
+	pipelineLoaded bool
+	pipelineDetail *models.PipelineDetail
+	pipelineErr    error
+	now            time.Time
+}
+
+// renderOverview produces the body of the Overview tab. Layout mirrors
+// design/project/wireframes/overview.js: bold title, dim subtitle, a fixed
+// 12-char key column for labeled rows, a dashed rule, then the description
+// block when one is set.
+func renderOverview(st overviewState) string {
+	if st.mr == nil {
+		return ""
+	}
+	mr := st.mr
+
 	var sb strings.Builder
-	sb.Grow(256)
+	sb.Grow(512)
 
-	fmt.Fprintf(&sb, "!%d %s\n\n", mr.IID, mr.Title)
-	fmt.Fprintf(&sb, "Author:   @%s\n", mr.Author.Username)
-	if reviewers := reviewersText(mr.Reviewers); reviewers != "" {
-		fmt.Fprintf(&sb, "Reviewers: %s\n", reviewers)
+	fmt.Fprintf(&sb, " %s%s%s\n", theme.Bold, mr.Title, theme.Reset)
+	sb.WriteString(" ")
+	sb.WriteString(theme.Dim)
+	sb.WriteString(overviewSubtitle(mr, st.now))
+	sb.WriteString(theme.Reset)
+	sb.WriteString("\n\n")
+
+	writeRow(&sb, "Author", theme.Wrap(theme.FgAccent, "@"+mr.Author.Username))
+	if reviewers := reviewersLine(mr.Reviewers); reviewers != "" {
+		writeRow(&sb, "Reviewers", reviewers)
 	}
-	fmt.Fprintf(&sb, "Created:  %s\n", mr.CreatedAt.Format(detailDateFormat))
-	fmt.Fprintf(&sb, "Status:   %s %s\n", mrStateLetter(mr.State), mr.State)
-	fmt.Fprintf(&sb, "Branches: %s%s%s\n", mr.SourceBranch, detailBranchesSep, mr.TargetBranch)
-	fmt.Fprintf(&sb, "Conflicts: %s\n", conflictText(mr.HasConflicts))
-	fmt.Fprintf(&sb, "Changes:  %s\n", diffStatsText(diffStats))
-	fmt.Fprintf(&sb, "Comments: %s\n", commentsText(mr.UserNotesCount, stats))
-	fmt.Fprintf(&sb, "Approvals: %s\n", approvalsText(approvals))
+	writeRow(&sb, "Branch", branchLine(mr.SourceBranch, mr.TargetBranch))
+	writeRow(&sb, "State", stateLine(mr.State))
+	writeRow(&sb, "Conflicts", conflictText(mr.HasConflicts))
+	writeRow(&sb, "Changes", diffStatsText(st.diffStats))
+	writeRow(&sb, "Approvals", approvalsText(st.approvals))
+	writeRow(&sb, "Pipeline", pipelineSummary(st.pipelineLoaded, st.pipelineDetail, st.pipelineErr))
+	writeRow(&sb, "Comments", commentsText(mr.UserNotesCount, st.stats))
+	writeRow(&sb, "Updated", updatedLine(mr.UpdatedAt, st.now))
+
+	desc := strings.TrimSpace(mr.Description)
+	if desc != "" {
+		sb.WriteString("\n ")
+		sb.WriteString(theme.Dim)
+		sb.WriteString(detailDescRule)
+		sb.WriteString(theme.Reset)
+		sb.WriteString("\n\n ")
+		sb.WriteString(theme.Bold)
+		sb.WriteString("Description")
+		sb.WriteString(theme.Reset)
+		sb.WriteString("\n\n")
+		writeDescription(&sb, desc)
+	}
 
 	return sb.String()
 }
 
-// commentsText formats the comment count, appending a resolved-thread
-// breakdown when stats carry any resolvable discussions. Mirrors Python
-// `_comments_text` — `N` on its own when nothing is resolvable,
-// `N ✓ (X/X resolved)` in green when every resolvable thread is resolved,
-// `N ⚠ (X/Y resolved)` in yellow when some remain unresolved.
-func commentsText(notesCount int, stats *models.DiscussionStats) string {
-	if stats == nil || stats.TotalResolvable == 0 {
-		return fmt.Sprintf("%d", notesCount)
+// writeRow appends one labeled row (" key<pad> value\n") with the fixed
+// key column width the design spec calls for. Hand-rolled padding beats
+// fmt.Fprintf — the latter allocates for the variadic args on every call,
+// and writeRow is invoked nine times per renderOverview.
+func writeRow(sb *strings.Builder, key, value string) {
+	sb.WriteByte(' ')
+	sb.WriteString(key)
+	for i := len(key); i < detailKeyWidth; i++ {
+		sb.WriteByte(' ')
+	}
+	sb.WriteByte(' ')
+	sb.WriteString(value)
+	sb.WriteByte('\n')
+}
+
+// writeDescription indents each line of the description body by 3 spaces so
+// it visually sits under the "Description" header. Trailing whitespace on
+// each line is trimmed to keep copy-paste clean.
+func writeDescription(sb *strings.Builder, desc string) {
+	for _, line := range strings.Split(desc, "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		sb.WriteString("   ")
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+}
+
+func overviewSubtitle(mr *models.MergeRequest, now time.Time) string {
+	verb := "opened"
+	switch {
+	case mr.State.IsMerged():
+		verb = "merged"
+	case mr.State.IsClosed():
+		verb = "closed"
+	}
+	reference := mr.CreatedAt
+	if mr.State.IsMerged() && mr.MergedAt != nil {
+		reference = *mr.MergedAt
+	}
+	rel := theme.Relative(reference, now)
+
+	var sb strings.Builder
+	sb.Grow(64)
+	fmt.Fprintf(&sb, "!%d", mr.IID)
+	if mr.ProjectPath != "" {
+		sb.WriteString(" · ")
+		sb.WriteString(mr.ProjectPath)
+	}
+	if rel != "" {
+		sb.WriteString(" · ")
+		sb.WriteString(verb)
+		sb.WriteByte(' ')
+		sb.WriteString(rel)
 	}
 
-	color, icon := ansiYellow, iconWarn
-	if stats.Resolved == stats.TotalResolvable {
-		color, icon = ansiGreen, iconOK
+	return sb.String()
+}
+
+// reviewersLine joins reviewer usernames into a comma-separated list, each
+// handle wrapped in accent colour. Returns "" when the MR has no reviewers
+// — caller skips the row.
+func reviewersLine(reviewers []models.User) string {
+	if len(reviewers) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.Grow(len(reviewers) * 20)
+	for i, u := range reviewers {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(theme.FgAccent)
+		sb.WriteByte('@')
+		sb.WriteString(u.Username)
+		sb.WriteString(theme.Reset)
 	}
 
-	return fmt.Sprintf("%d %s%s (%d/%d resolved)%s",
-		notesCount, color, icon, stats.Resolved, stats.TotalResolvable, ansiReset,
-	)
+	return sb.String()
+}
+
+func branchLine(source, target string) string {
+	return source + detailBranchesSep + target
+}
+
+func stateLine(s models.MRState) string {
+	var color, word string
+	switch {
+	case s.IsOpen():
+		color, word = theme.FgOK, "opened"
+	case s.IsMerged():
+		color, word = theme.FgMerged, "merged"
+	case s.IsClosed():
+		color, word = theme.FgErr, "closed"
+	default:
+		color, word = theme.FgDraft, strings.ToLower(string(s))
+	}
+
+	return theme.Dot(color) + " " + theme.Wrap(color, word)
 }
 
 func conflictText(hasConflicts bool) string {
@@ -816,56 +979,144 @@ func conflictText(hasConflicts bool) string {
 	return detailNoConflicts
 }
 
-// diffStatsText renders the "Changes:" overview line. Returns a dim
+// diffStatsText renders the "Changes" overview line. Returns a dim
 // "loading…" hint while the fetch is in flight (stats == nil) and the
 // coloured `+N -M` pair once the diff has been counted.
 func diffStatsText(stats *models.DiffStats) string {
 	if stats == nil {
-		return ansiDim + "loading…" + ansiReset
+		return theme.Wrap(theme.Dim, "loading…")
 	}
 
-	return fmt.Sprintf("%s+%d%s %s-%d%s",
-		ansiGreen, stats.Added, ansiReset,
-		ansiRed, stats.Removed, ansiReset,
+	return fmt.Sprintf("%s %s",
+		theme.Wrap(theme.FgOK, fmt.Sprintf("+%d", stats.Added)),
+		theme.Wrap(theme.FgErr, fmt.Sprintf("-%d", stats.Removed)),
 	)
 }
 
-// reviewersText joins reviewer usernames into a comma-separated list.
-// Returns "" when the MR has no reviewers — caller skips the line.
-func reviewersText(reviewers []models.User) string {
-	if len(reviewers) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	sb.Grow(len(reviewers) * 16)
-	for i, u := range reviewers {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		sb.WriteByte('@')
-		sb.WriteString(u.Username)
-	}
-
-	return sb.String()
-}
-
-// approvalsText renders the "Approvals:" overview line. The `required == 0`
+// approvalsText renders the "Approvals" overview line. The `required == 0`
 // dim branch avoids misleading `0/0 ✗` on projects with no approval rules.
 func approvalsText(a *models.ApprovalStatus) string {
 	if a == nil {
-		return ansiDim + "loading…" + ansiReset
+		return theme.Wrap(theme.Dim, "loading…")
 	}
 	if a.ApprovalsRequired == 0 {
-		return ansiDim + "no approvals required" + ansiReset
+		return theme.Wrap(theme.Dim, "no approvals required")
 	}
 
 	received := a.ApprovalsRequired - a.ApprovalsLeft
-	color, icon := ansiRed, iconBad
+	color, icon := theme.FgErr, iconBad
 	if a.Approved {
-		color, icon = ansiGreen, iconOK
+		color, icon = theme.FgOK, iconOK
 	}
 
 	return fmt.Sprintf("%s%s %d/%d approvals received%s",
-		color, icon, received, a.ApprovalsRequired, ansiReset,
+		color, icon, received, a.ApprovalsRequired, theme.Reset,
 	)
+}
+
+// pipelineSummary renders the "Pipeline" overview row. Loaded=false means
+// "fetch in flight" (dim loading); loaded=true + nil detail means "MR has
+// no pipeline"; err != nil surfaces the error in red.
+func pipelineSummary(loaded bool, pd *models.PipelineDetail, err error) string {
+	if err != nil {
+		return theme.Wrap(theme.FgErr, "error: "+err.Error())
+	}
+	if !loaded {
+		return theme.Wrap(theme.Dim, "loading…")
+	}
+	if pd == nil {
+		return theme.Wrap(theme.Dim, "no pipeline")
+	}
+
+	p := pd.Pipeline
+	color := pipelineStatusColor(p.Status)
+	label := pipelineStatusLabel(p.Status)
+	head := theme.Dot(color) + " " + color + label + theme.Reset
+
+	meta := fmt.Sprintf("#%d", p.ID)
+	if dur := pipelineDurationText(p); dur != "" {
+		meta += " · " + dur
+	}
+
+	return head + "     " + theme.Wrap(theme.Dim, meta)
+}
+
+// pipelineDurationText returns the pipeline's wall-clock runtime, computed
+// from UpdatedAt-CreatedAt when the status is terminal. Non-terminal
+// pipelines return "" so the row does not display a misleading duration
+// during an in-flight run.
+func pipelineDurationText(p models.Pipeline) string {
+	if !p.Status.IsTerminal() {
+		return ""
+	}
+	if p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() {
+		return ""
+	}
+	d := p.UpdatedAt.Sub(p.CreatedAt)
+	if d <= 0 {
+		return ""
+	}
+	seconds := int(d / time.Second)
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+
+	return fmt.Sprintf("%dm %ds", seconds/60, seconds%60)
+}
+
+// pipelineStatusLabel maps GitLab's wire status to the user-facing verb
+// used in the Overview row. Unknown statuses fall through as the lowercase
+// wire name so the row still shows something meaningful.
+func pipelineStatusLabel(s models.PipelineStatus) string {
+	if s == models.PipelineStatusSuccess {
+		return "passed"
+	}
+
+	return strings.ToLower(string(s))
+}
+
+// pipelineStatusColor maps a PipelineStatus to its semantic palette token.
+// Shared with pipeline_stages.go's per-job icon colouring.
+func pipelineStatusColor(s models.PipelineStatus) string {
+	switch s {
+	case models.PipelineStatusSuccess:
+		return theme.FgOK
+	case models.PipelineStatusFailed:
+		return theme.FgErr
+	case models.PipelineStatusRunning,
+		models.PipelineStatusPending,
+		models.PipelineStatusPreparing,
+		models.PipelineStatusWaitingForResource:
+		return theme.FgWarn
+	case models.PipelineStatusCanceled,
+		models.PipelineStatusSkipped,
+		models.PipelineStatusCreated:
+		return theme.FgDraft
+	case models.PipelineStatusManual,
+		models.PipelineStatusScheduled:
+		return theme.FgInfo
+	default:
+		return theme.FgDraft
+	}
+}
+
+// commentsText formats the comment count, appending a resolved-thread
+// breakdown in dim when stats carry any resolvable discussions.
+func commentsText(notesCount int, stats *models.DiscussionStats) string {
+	if stats == nil || stats.TotalResolvable == 0 {
+		return fmt.Sprintf("%d", notesCount)
+	}
+
+	return fmt.Sprintf("%d    %s(%d/%d resolved)%s",
+		notesCount, theme.Dim, stats.Resolved, stats.TotalResolvable, theme.Reset,
+	)
+}
+
+func updatedLine(t time.Time, now time.Time) string {
+	rel := theme.Relative(t, now)
+	if rel == "" {
+		return theme.Wrap(theme.Dim, "—")
+	}
+
+	return theme.Wrap(theme.Dim, rel)
 }

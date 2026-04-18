@@ -7,6 +7,8 @@ import (
 	"github.com/jesseduffield/gocui"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 // TUISuite groups tests that share a real (headless) *gocui.Gui. The fork stores
@@ -82,7 +84,7 @@ func (s *TUISuite) TestHighlightFocused_PaintsOnlyCurrent() {
 		v, err := s.g.View(name)
 		s.Require().NoError(err)
 		if name == ViewRepos {
-			s.Require().Equal(gocui.ColorGreen, v.FrameColor, "%q should start focused", name)
+			s.Require().Equal(theme.ColorAccent, v.FrameColor, "%q should start focused", name)
 		} else {
 			s.Require().Equal(gocui.ColorDefault, v.FrameColor, "%q should start unfocused", name)
 		}
@@ -93,7 +95,7 @@ func (s *TUISuite) TestHighlightFocused_PaintsOnlyCurrent() {
 
 	mrs, err := s.g.View(ViewMRs)
 	s.Require().NoError(err)
-	s.Require().Equal(gocui.ColorGreen, mrs.FrameColor)
+	s.Require().Equal(theme.ColorAccent, mrs.FrameColor)
 
 	repos, err := s.g.View(ViewRepos)
 	s.Require().NoError(err)
