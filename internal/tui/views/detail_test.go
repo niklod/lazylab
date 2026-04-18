@@ -388,16 +388,12 @@ func (s *DetailViewSuite) TestSetTab_RendersActiveTabLabel() {
 	s.Require().Contains(buf, "Overview")
 }
 
-func (s *DetailViewSuite) TestSetTab_ConversationAndPipelineShowStubs() {
+func (s *DetailViewSuite) TestSetTab_ConversationStillShowsStub() {
 	s.detail.SetMR(nil, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
 
 	s.detail.SetTab(DetailTabConversation, nil)
 	s.detail.Render(s.pane())
 	s.Require().Contains(s.pane().Buffer(), detailConversationStub)
-
-	s.detail.SetTab(DetailTabPipeline, nil)
-	s.detail.Render(s.pane())
-	s.Require().Contains(s.pane().Buffer(), detailPipelineStub)
 }
 
 func (s *DetailViewSuite) TestSetTabSync_FetchesDiffAndPopulatesTree() {
@@ -754,13 +750,272 @@ func (s *DetailViewSuite) TestFocusTargetForTab_TabletoPane() {
 	s.Require().Equal(keymap.ViewDetail, focusTargetForTab(DetailTabOverview))
 	s.Require().Equal(keymap.ViewDetailDiffTree, focusTargetForTab(DetailTabDiff))
 	s.Require().Equal(keymap.ViewDetail, focusTargetForTab(DetailTabConversation))
-	s.Require().Equal(keymap.ViewDetail, focusTargetForTab(DetailTabPipeline))
+	s.Require().Equal(keymap.ViewDetailPipelineStages, focusTargetForTab(DetailTabPipeline))
 }
 
 func (s *DetailViewSuite) TestNextDetailTab_Wraps() {
 	s.Require().Equal(DetailTabDiff, nextDetailTab(DetailTabOverview, 1))
 	s.Require().Equal(DetailTabPipeline, nextDetailTab(DetailTabOverview, -1))
 	s.Require().Equal(DetailTabOverview, nextDetailTab(DetailTabPipeline, 1))
+}
+
+func (s *DetailViewSuite) pipelineHandler(pipelinesBody, pipelineBody, jobsBody, traceBody string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/merge_requests/") && strings.HasSuffix(r.URL.Path, "/pipelines"):
+			_, _ = fmt.Fprint(w, pipelinesBody)
+		case strings.Contains(r.URL.Path, "/pipelines/") && strings.HasSuffix(r.URL.Path, "/jobs"):
+			_, _ = fmt.Fprint(w, jobsBody)
+		case strings.Contains(r.URL.Path, "/pipelines/"):
+			_, _ = fmt.Fprint(w, pipelineBody)
+		case strings.Contains(r.URL.Path, "/jobs/") && strings.HasSuffix(r.URL.Path, "/trace"):
+			_, _ = fmt.Fprint(w, traceBody)
+		case strings.Contains(r.URL.Path, "/discussions"),
+			strings.Contains(r.URL.Path, "/approvals"),
+			strings.Contains(r.URL.Path, "/diffs"):
+			_, _ = fmt.Fprint(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}
+}
+
+func (s *DetailViewSuite) TestSetTabSync_Pipeline_FetchesDetailAndPopulatesStages() {
+	s.buildAppWithHandler(s.pipelineHandler(
+		`[{"id":77,"iid":1,"project_id":11,"status":"running","ref":"feat/x","web_url":"u"}]`,
+		`{"id":77,"status":"running","ref":"feat/x","sha":"deadbeef","web_url":"u"}`,
+		`[
+			{"id":1,"name":"build","stage":"build","status":"success","duration":12.0},
+			{"id":2,"name":"test","stage":"test","status":"failed","duration":30.0}
+		]`,
+		"",
+	))
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, mr)
+
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabPipeline, project))
+
+	s.Require().Equal(DetailTabPipeline, s.detail.CurrentTab())
+
+	stages := s.detail.PipelineStages()
+	s.Require().NotNil(stages)
+	s.Require().Positive(stages.RowCount(), "rows populated after sync fetch")
+	s.Require().NotNil(s.detail.PipelineDetailSnapshot())
+	s.Require().Len(s.detail.PipelineDetailSnapshot().Jobs, 2)
+	// Fixture: [build, test]. Client reverses to pipeline exec order:
+	// newest-first API → exec-order [test, build] after flip. Cursor
+	// lands on the first job row under the first stage header = "test".
+	s.Require().Equal("test", stages.SelectedJob().Stage)
+}
+
+func (s *DetailViewSuite) TestSetTabSync_Pipeline_EmptyPipelineShowsEmptyHint() {
+	s.buildAppWithHandler(s.pipelineHandler(`[]`, ``, ``, ``))
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, mr)
+
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabPipeline, project))
+
+	s.Require().Equal(0, s.detail.PipelineStages().RowCount())
+	s.Require().Nil(s.detail.PipelineDetailSnapshot())
+}
+
+func (s *DetailViewSuite) TestSetTabSync_Pipeline_UpstreamErrorWrapped() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"boom"}`)
+	})
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, mr)
+
+	err := s.detail.SetTabSync(context.Background(), DetailTabPipeline, project)
+
+	s.Require().Error(err)
+	s.Require().ErrorContains(err, "fetch mr pipeline")
+}
+
+func (s *DetailViewSuite) TestApplyPipeline_StaleSeqIgnored() {
+	s.detail.SetMR(nil, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
+
+	s.detail.applyPipeline(0, &models.PipelineDetail{Jobs: []models.PipelineJob{{Name: "build"}}}, nil)
+
+	s.Require().Nil(s.detail.PipelineDetailSnapshot(), "stale seq must not clobber current state")
+}
+
+func (s *DetailViewSuite) TestSetMR_Pipeline_ResetsState() {
+	s.buildAppWithHandler(s.pipelineHandler(
+		`[{"id":77,"iid":1,"project_id":11,"status":"running","ref":"feat/x","web_url":"u"}]`,
+		`{"id":77,"status":"running","ref":"feat/x","sha":"d","web_url":"u"}`,
+		`[{"id":1,"name":"build","stage":"build","status":"success","duration":5.0}]`,
+		"",
+	))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened})
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabPipeline, project))
+	s.Require().Positive(s.detail.PipelineStages().RowCount())
+
+	s.detail.SetMR(project, &models.MergeRequest{IID: 6, Title: "U", State: models.MRStateOpened})
+
+	s.Require().Equal(0, s.detail.PipelineStages().RowCount(), "stages cleared on MR swap")
+	s.Require().Nil(s.detail.PipelineDetailSnapshot())
+	s.Require().False(s.detail.LogOpen())
+}
+
+func (s *DetailViewSuite) TestOpenJobLogSync_PopulatesLogAndMarksOpen() {
+	s.buildAppWithHandler(s.pipelineHandler(
+		`[{"id":77,"iid":1,"project_id":11,"status":"failed","ref":"feat/x","web_url":"u"}]`,
+		`{"id":77,"status":"failed","ref":"feat/x","sha":"d","web_url":"u"}`,
+		`[{"id":21,"name":"test:unit","stage":"test","status":"failed","duration":42.0}]`,
+		"trace line 1\ntrace line 2\n",
+	))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(project, mr)
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabPipeline, project))
+	s.Require().NotNil(s.detail.PipelineStages().SelectedJob())
+
+	s.Require().NoError(s.detail.OpenJobLogSync(context.Background(), project))
+
+	s.Require().True(s.detail.LogOpen())
+	jobLog := s.detail.JobLog()
+	s.Require().NotNil(jobLog)
+	s.Require().NotNil(jobLog.CurrentJob())
+	s.Require().Equal(21, jobLog.CurrentJob().ID)
+}
+
+func (s *DetailViewSuite) TestOpenJobLogSync_TraceErrorSurfacesAndWidgetShowsError() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/jobs/") && strings.HasSuffix(r.URL.Path, "/trace"):
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"message":"trace boom"}`)
+		case strings.Contains(r.URL.Path, "/merge_requests/") && strings.HasSuffix(r.URL.Path, "/pipelines"):
+			_, _ = fmt.Fprint(w, `[{"id":77,"iid":1,"project_id":11,"status":"failed","ref":"feat/x","web_url":"u"}]`)
+		case strings.HasSuffix(r.URL.Path, "/pipelines/77/jobs"):
+			_, _ = fmt.Fprint(w, `[{"id":21,"name":"test:unit","stage":"test","status":"failed","duration":42.0}]`)
+		case strings.Contains(r.URL.Path, "/pipelines/"):
+			_, _ = fmt.Fprint(w, `{"id":77,"status":"failed","ref":"feat/x","sha":"d","web_url":"u"}`)
+		default:
+			_, _ = fmt.Fprint(w, `[]`)
+		}
+	})
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(project, mr)
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabPipeline, project))
+
+	err := s.detail.OpenJobLogSync(context.Background(), project)
+
+	s.Require().Error(err)
+	s.Require().ErrorContains(err, "fetch job trace")
+	s.Require().True(s.detail.LogOpen(), "error leaves log open showing the error message")
+	s.Require().Contains(s.detail.JobLog().statusSnapshot(), ansiRed)
+}
+
+func (s *DetailViewSuite) TestApplyJobTrace_StaleSeqIgnored() {
+	job := &models.PipelineJob{ID: 21, Name: "test", Stage: "test", Status: models.PipelineStatusFailed}
+	s.detail.beginJobLogLoad(job)
+
+	s.detail.applyJobTrace(0, job, "stale trace", nil)
+
+	s.Require().Nil(s.detail.JobLog().CurrentJob(),
+		"stale seq must not populate the log")
+}
+
+func (s *DetailViewSuite) TestApplyJobTrace_IgnoredAfterClose() {
+	job := &models.PipelineJob{ID: 21, Name: "test", Stage: "test", Status: models.PipelineStatusFailed}
+	seq := s.detail.beginJobLogLoad(job)
+	s.detail.CloseJobLog()
+
+	s.detail.applyJobTrace(seq, job, "late arrival", nil)
+
+	s.Require().Nil(s.detail.JobLog().CurrentJob(),
+		"closed log swallows in-flight trace result")
+}
+
+func (s *DetailViewSuite) TestPipelineLogHalfPage_DispatchesHalfPaneHeight() {
+	s.buildAppWithHandler(s.pipelineHandler(
+		`[{"id":77,"iid":1,"project_id":11,"status":"failed","ref":"feat/x","web_url":"u"}]`,
+		`{"id":77,"status":"failed","ref":"feat/x","sha":"d","web_url":"u"}`,
+		`[{"id":21,"name":"test","stage":"test","status":"failed","duration":42.0}]`,
+		"line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\n",
+	))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened})
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabPipeline, project))
+	s.Require().NoError(s.detail.OpenJobLogSync(context.Background(), project))
+
+	pane, err := s.g.SetView(keymap.ViewDetailPipelineJobLog, 0, 0, 40, 8, 0)
+	if err != nil && !goerrors.Is(err, gocui.ErrUnknownView) {
+		s.T().Fatalf("SetView log pane: %v", err)
+	}
+	pane.SetOrigin(0, 0)
+
+	s.detail.JobLog().ScrollBy(pane, 3)
+
+	_, oy := pane.Origin()
+	s.Require().Positive(oy, "ScrollBy advances pane origin")
+}
+
+func (s *DetailViewSuite) TestCloseJobLog_ResetsStateAndRequestsStagesFocus() {
+	s.buildAppWithHandler(s.pipelineHandler(
+		`[{"id":77,"iid":1,"project_id":11,"status":"failed","ref":"feat/x","web_url":"u"}]`,
+		`{"id":77,"status":"failed","ref":"feat/x","sha":"d","web_url":"u"}`,
+		`[{"id":21,"name":"test:unit","stage":"test","status":"failed","duration":42.0}]`,
+		"body",
+	))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(project, mr)
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabPipeline, project))
+	_ = s.detail.ConsumePendingFocus()
+	s.Require().NoError(s.detail.OpenJobLogSync(context.Background(), project))
+	_ = s.detail.ConsumePendingFocus()
+
+	s.detail.CloseJobLog()
+
+	s.Require().False(s.detail.LogOpen())
+	s.Require().Nil(s.detail.JobLog().CurrentJob())
+	s.Require().Equal(keymap.ViewDetailPipelineStages, s.detail.ConsumePendingFocus())
+}
+
+func (s *DetailViewSuite) TestCloseJobLog_WhenNotOpen_IsNoOp() {
+	s.detail.CloseJobLog()
+
+	s.Require().False(s.detail.LogOpen())
+	s.Require().Empty(s.detail.ConsumePendingFocus())
+}
+
+func (s *DetailViewSuite) TestSetTab_LeavingPipeline_ResetsLogStateAndPointsFocusAtNewTab() {
+	s.buildAppWithHandler(s.pipelineHandler(
+		`[{"id":77,"iid":1,"project_id":11,"status":"failed","ref":"feat/x","web_url":"u"}]`,
+		`{"id":77,"status":"failed","ref":"feat/x","sha":"d","web_url":"u"}`,
+		`[{"id":21,"name":"test:unit","stage":"test","status":"failed","duration":42.0}]`,
+		"body",
+	))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(project, mr)
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabPipeline, project))
+	s.Require().NoError(s.detail.OpenJobLogSync(context.Background(), project))
+	s.Require().True(s.detail.LogOpen())
+	_ = s.detail.ConsumePendingFocus()
+
+	s.detail.SetTab(DetailTabConversation, project)
+
+	s.Require().False(s.detail.LogOpen(),
+		"leaving Pipeline with log open must reset log state")
+	s.Require().Equal(keymap.ViewDetail, s.detail.ConsumePendingFocus(),
+		"focus points at Conversation pane, not the now-defunct log")
+	s.Require().Nil(s.detail.JobLog().CurrentJob())
+
+	s.detail.SetTab(DetailTabPipeline, project)
+	s.Require().Equal(keymap.ViewDetailPipelineStages, s.detail.ConsumePendingFocus(),
+		"re-entering Pipeline always lands on the stages pane")
 }
 
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; parallel runs race.

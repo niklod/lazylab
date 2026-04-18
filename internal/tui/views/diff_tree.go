@@ -36,12 +36,17 @@ type diffTreeRow struct {
 // Cursor highlighting follows ReposView/MRsView: Highlight + SelBgColor on
 // first render + placeCursor after writing the buffer. j/k skip over
 // directory rows (file == nil) so Enter always lands on a real file.
+//
+// The Highlight properties are re-applied whenever Render receives a pane
+// pointer it hasn't seen before. Diff sub-panes are unmounted on every
+// tab cycle away from Diff and remounted on return; a single "configured
+// once" flag would leave the remounted pane without a visible cursor row.
 type DiffTreeView struct {
-	mu         sync.Mutex
-	rows       []diffTreeRow
-	cursor     int
-	status     string
-	configured bool
+	mu       sync.Mutex
+	rows     []diffTreeRow
+	cursor   int
+	status   string
+	lastPane *gocui.View
 }
 
 // NewDiffTree constructs an empty DiffTreeView. Populate via SetFiles.
@@ -183,11 +188,11 @@ func (d *DiffTreeView) Render(pane *gocui.View) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if !d.configured {
+	if d.lastPane != pane {
 		pane.Highlight = true
 		pane.SelBgColor = gocui.ColorGreen
 		pane.SelFgColor = gocui.ColorBlack
-		d.configured = true
+		d.lastPane = pane
 	}
 
 	pane.Clear()

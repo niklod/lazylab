@@ -60,20 +60,33 @@ func (v *Views) Bindings() []keymap.Binding {
 }
 
 // FocusOrder returns the active focus cycle — includes the Diff-tab
-// sub-panes when the Diff tab is showing, otherwise the plain 3-pane cycle.
-// Installed into the tui package via SetFocusOrderProvider at startup.
+// sub-panes when the Diff tab is showing, the Pipeline-tab sub-panes
+// (stages alone, or log alone when expanded) when Pipeline is showing,
+// otherwise the plain 3-pane cycle. Installed into the tui package via
+// SetFocusOrderProvider at startup.
 func (v *Views) FocusOrder() []string {
 	base := []string{keymap.ViewRepos, keymap.ViewMRs, keymap.ViewDetail}
-	if v == nil || v.Detail == nil || v.Detail.CurrentTab() != DetailTabDiff {
+	if v == nil || v.Detail == nil {
 		return base
 	}
+	switch v.Detail.CurrentTab() {
+	case DetailTabDiff:
+		return []string{
+			keymap.ViewRepos,
+			keymap.ViewMRs,
+			keymap.ViewDetailDiffTree,
+			keymap.ViewDetailDiffContent,
+		}
+	case DetailTabPipeline:
+		child := keymap.ViewDetailPipelineStages
+		if v.Detail.LogOpen() {
+			child = keymap.ViewDetailPipelineJobLog
+		}
 
-	return []string{
-		keymap.ViewRepos,
-		keymap.ViewMRs,
-		keymap.ViewDetailDiffTree,
-		keymap.ViewDetailDiffContent,
+		return []string{keymap.ViewRepos, keymap.ViewMRs, child}
 	}
+
+	return base
 }
 
 // detailBindings produces the full per-view binding set for the Detail
@@ -86,6 +99,8 @@ func (v *Views) detailBindings() []keymap.Binding {
 		keymap.ViewDetail,
 		keymap.ViewDetailDiffTree,
 		keymap.ViewDetailDiffContent,
+		keymap.ViewDetailPipelineStages,
+		keymap.ViewDetailPipelineJobLog,
 	}
 
 	var out []keymap.Binding
@@ -105,6 +120,8 @@ func (v *Views) detailBindings() []keymap.Binding {
 
 	out = append(out, v.diffTreeBindings()...)
 	out = append(out, v.diffContentBindings()...)
+	out = append(out, v.pipelineStagesBindings()...)
+	out = append(out, v.pipelineJobLogBindings()...)
 
 	return out
 }
@@ -137,6 +154,141 @@ func (v *Views) diffContentBindings() []keymap.Binding {
 		{View: keymap.ViewDetailDiffContent, Key: gocui.KeyCtrlD, Handler: v.diffContentHalfPage(+1)},
 		{View: keymap.ViewDetailDiffContent, Key: gocui.KeyCtrlU, Handler: v.diffContentHalfPage(-1)},
 	}
+}
+
+func (v *Views) pipelineStagesBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{View: keymap.ViewDetailPipelineStages, Key: 'j', Handler: v.pipelineStagesMove(1)},
+		{View: keymap.ViewDetailPipelineStages, Key: 'k', Handler: v.pipelineStagesMove(-1)},
+		{View: keymap.ViewDetailPipelineStages, Key: gocui.KeyArrowDown, Handler: v.pipelineStagesMove(1)},
+		{View: keymap.ViewDetailPipelineStages, Key: gocui.KeyArrowUp, Handler: v.pipelineStagesMove(-1)},
+		{View: keymap.ViewDetailPipelineStages, Key: 'g', Handler: v.pipelineStagesMoveToStart},
+		{View: keymap.ViewDetailPipelineStages, Key: 'G', Handler: v.pipelineStagesMoveToEnd},
+		{View: keymap.ViewDetailPipelineStages, Key: gocui.KeyEnter, Handler: v.openJobLog},
+	}
+}
+
+func (v *Views) pipelineJobLogBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'j', Handler: v.pipelineLogScroll(1)},
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'k', Handler: v.pipelineLogScroll(-1)},
+		{View: keymap.ViewDetailPipelineJobLog, Key: gocui.KeyArrowDown, Handler: v.pipelineLogScroll(1)},
+		{View: keymap.ViewDetailPipelineJobLog, Key: gocui.KeyArrowUp, Handler: v.pipelineLogScroll(-1)},
+		{View: keymap.ViewDetailPipelineJobLog, Key: gocui.KeyCtrlD, Handler: v.pipelineLogHalfPage(+1)},
+		{View: keymap.ViewDetailPipelineJobLog, Key: gocui.KeyCtrlU, Handler: v.pipelineLogHalfPage(-1)},
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'g', Handler: v.pipelineLogScrollToTop},
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'G', Handler: v.pipelineLogScrollToBottom},
+		{View: keymap.ViewDetailPipelineJobLog, Key: gocui.KeyEsc, Handler: v.closeJobLog},
+	}
+}
+
+func (v *Views) pipelineLogScrollToTop(g *gocui.Gui, _ *gocui.View) error {
+	pv := v.pipelineLogPane(g)
+	if pv == nil {
+		return nil
+	}
+	v.Detail.JobLog().ScrollToTop(pv)
+
+	return nil
+}
+
+func (v *Views) pipelineLogScrollToBottom(g *gocui.Gui, _ *gocui.View) error {
+	pv := v.pipelineLogPane(g)
+	if pv == nil {
+		return nil
+	}
+	v.Detail.JobLog().ScrollToBottom(pv)
+
+	return nil
+}
+
+func (v *Views) pipelineStagesMove(delta int) keymap.HandlerFunc {
+	return func(_ *gocui.Gui, _ *gocui.View) error {
+		if v.Detail == nil || v.Detail.PipelineStages() == nil {
+			return nil
+		}
+		v.Detail.PipelineStages().MoveCursor(delta)
+
+		return nil
+	}
+}
+
+func (v *Views) pipelineStagesMoveToStart(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil || v.Detail.PipelineStages() == nil {
+		return nil
+	}
+	v.Detail.PipelineStages().MoveCursorToStart()
+
+	return nil
+}
+
+func (v *Views) pipelineStagesMoveToEnd(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil || v.Detail.PipelineStages() == nil {
+		return nil
+	}
+	v.Detail.PipelineStages().MoveCursorToEnd()
+
+	return nil
+}
+
+//nolint:contextcheck // gocui handler signature is fixed; background ctx is intentional.
+func (v *Views) openJobLog(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil {
+		return nil
+	}
+	v.Detail.OpenJobLog(v.currentProject())
+
+	return nil
+}
+
+func (v *Views) closeJobLog(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil {
+		return nil
+	}
+	v.Detail.CloseJobLog()
+
+	return nil
+}
+
+func (v *Views) pipelineLogScroll(delta int) keymap.HandlerFunc {
+	return func(g *gocui.Gui, _ *gocui.View) error {
+		pv := v.pipelineLogPane(g)
+		if pv == nil {
+			return nil
+		}
+		v.Detail.JobLog().ScrollBy(pv, delta)
+
+		return nil
+	}
+}
+
+func (v *Views) pipelineLogHalfPage(direction int) keymap.HandlerFunc {
+	return func(g *gocui.Gui, _ *gocui.View) error {
+		pv := v.pipelineLogPane(g)
+		if pv == nil {
+			return nil
+		}
+		_, innerH := pv.InnerSize()
+		step := innerH / 2
+		if step <= 0 {
+			step = 1
+		}
+		v.Detail.JobLog().ScrollBy(pv, direction*step)
+
+		return nil
+	}
+}
+
+func (v *Views) pipelineLogPane(g *gocui.Gui) *gocui.View {
+	if v.Detail == nil || v.Detail.JobLog() == nil || g == nil {
+		return nil
+	}
+	pv, err := g.View(keymap.ViewDetailPipelineJobLog)
+	if err != nil {
+		return nil
+	}
+
+	return pv
 }
 
 // cycleDetailTab returns a handler that advances the detail pane's active

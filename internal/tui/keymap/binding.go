@@ -7,13 +7,15 @@ package keymap
 import "github.com/jesseduffield/gocui"
 
 const (
-	ViewRepos             = "repos"
-	ViewMRs               = "mrs"
-	ViewDetail            = "detail"
-	ViewReposSearch       = "repos_search"
-	ViewMRsSearch         = "mrs_search"
-	ViewDetailDiffTree    = "detail_diff_tree"
-	ViewDetailDiffContent = "detail_diff_content"
+	ViewRepos                = "repos"
+	ViewMRs                  = "mrs"
+	ViewDetail               = "detail"
+	ViewReposSearch          = "repos_search"
+	ViewMRsSearch            = "mrs_search"
+	ViewDetailDiffTree       = "detail_diff_tree"
+	ViewDetailDiffContent    = "detail_diff_content"
+	ViewDetailPipelineStages = "detail_pipeline_stages"
+	ViewDetailPipelineJobLog = "detail_pipeline_job_log"
 )
 
 // HandlerFunc matches gocui's keybinding handler signature.

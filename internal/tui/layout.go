@@ -109,6 +109,9 @@ func renderPanes(g *gocui.Gui, v *views.Views) error {
 		if err := manageDiffSubpanes(g, v, r.detail); err != nil {
 			return err
 		}
+		if err := managePipelineSubpanes(g, v, r.detail); err != nil {
+			return err
+		}
 		if err := applyPendingDetailFocus(g, v); err != nil {
 			return err
 		}
@@ -175,6 +178,65 @@ func manageDiffSubpanes(g *gocui.Gui, v *views.Views, detail rect) error {
 	}
 	if content, err := g.View(keymap.ViewDetailDiffContent); err == nil && v.Detail.DiffContent() != nil {
 		v.Detail.DiffContent().Render(content)
+	}
+
+	return nil
+}
+
+// managePipelineSubpanes mounts exactly one of the Pipeline-tab child panes
+// (stages when the log is closed, log when open) inside the detail rect.
+// Mount-before-delete order matters: gocui.DeleteView does not clear the
+// current-view pointer, so when the user toggles the log we must create
+// the incoming pane first, then delete the outgoing one — otherwise
+// SetCurrentView would dangle for one tick.
+func managePipelineSubpanes(g *gocui.Gui, v *views.Views, detail rect) error {
+	active := v.Detail != nil && v.Detail.CurrentTab() == views.DetailTabPipeline
+	if !active {
+		if err := deleteViewIfPresent(g, keymap.ViewDetailPipelineStages); err != nil {
+			return err
+		}
+
+		return deleteViewIfPresent(g, keymap.ViewDetailPipelineJobLog)
+	}
+
+	inner := rect{
+		x0: detail.x0 + 1,
+		y0: detail.y0 + 2,
+		x1: detail.x1 - 1,
+		y1: detail.y1 - 1,
+	}
+	if inner.x1-inner.x0 < 10 || inner.y1-inner.y0 < 3 {
+		return nil
+	}
+
+	if v.Detail.LogOpen() {
+		if err := mountSubpane(g, keymap.ViewDetailPipelineJobLog, inner, func(pv *gocui.View) {
+			pv.Frame = false
+			pv.Wrap = false
+		}); err != nil {
+			return err
+		}
+		if err := deleteViewIfPresent(g, keymap.ViewDetailPipelineStages); err != nil {
+			return err
+		}
+		if pv, err := g.View(keymap.ViewDetailPipelineJobLog); err == nil && v.Detail.JobLog() != nil {
+			v.Detail.JobLog().Render(pv)
+		}
+
+		return nil
+	}
+
+	if err := mountSubpane(g, keymap.ViewDetailPipelineStages, inner, func(pv *gocui.View) {
+		pv.Frame = false
+		pv.Wrap = false
+	}); err != nil {
+		return err
+	}
+	if err := deleteViewIfPresent(g, keymap.ViewDetailPipelineJobLog); err != nil {
+		return err
+	}
+	if pv, err := g.View(keymap.ViewDetailPipelineStages); err == nil && v.Detail.PipelineStages() != nil {
+		v.Detail.PipelineStages().Render(pv)
 	}
 
 	return nil

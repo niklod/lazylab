@@ -5,11 +5,13 @@ import "github.com/niklod/lazylab/internal/tui/keymap"
 // View names are re-exported from keymap so both tui and tui/views can reference
 // them without creating an import cycle.
 const (
-	ViewRepos             = keymap.ViewRepos
-	ViewMRs               = keymap.ViewMRs
-	ViewDetail            = keymap.ViewDetail
-	ViewDetailDiffTree    = keymap.ViewDetailDiffTree
-	ViewDetailDiffContent = keymap.ViewDetailDiffContent
+	ViewRepos                = keymap.ViewRepos
+	ViewMRs                  = keymap.ViewMRs
+	ViewDetail               = keymap.ViewDetail
+	ViewDetailDiffTree       = keymap.ViewDetailDiffTree
+	ViewDetailDiffContent    = keymap.ViewDetailDiffContent
+	ViewDetailPipelineStages = keymap.ViewDetailPipelineStages
+	ViewDetailPipelineJobLog = keymap.ViewDetailPipelineJobLog
 )
 
 // focusOrder is the baseline focus-cycle order (Overview tab — detail pane is
@@ -38,7 +40,9 @@ func SetFocusOrderProvider(fn func() []string) {
 // otherwise switching tabs would visually "lose" the frame.
 func detailFamily(name string) bool {
 	switch name {
-	case ViewDetail, ViewDetailDiffTree, ViewDetailDiffContent:
+	case ViewDetail,
+		ViewDetailDiffTree, ViewDetailDiffContent,
+		ViewDetailPipelineStages, ViewDetailPipelineJobLog:
 		return true
 	}
 

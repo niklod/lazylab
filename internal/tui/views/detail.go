@@ -41,7 +41,6 @@ const (
 	detailDiffLoading      = "Loading diff…"
 	detailDiffEmpty        = "No files changed in this merge request."
 	detailConversationStub = "Conversation tab — not yet implemented."
-	detailPipelineStub     = "Pipeline tab — not yet implemented."
 )
 
 // DetailTab identifies which sub-tab the detail pane is currently showing.
@@ -74,9 +73,11 @@ var detailTabLabels = [detailTabCount]string{
 // currentTab == DetailTabDiff. Diff state is reset on SetMR via diffSeq so
 // switching MRs mid-fetch cannot cross-pollinate results.
 //
-// Lock ordering: DetailView.mu → diffTree.mu → diffContent.mu. applyDiff
-// is called with DetailView.mu held and calls diffTree.SelectedFile(),
-// which acquires diffTree.mu. Never invert this order.
+// Lock ordering: DetailView.mu → {diffTree, diffContent, pipelineStages,
+// jobLog}.mu. Child widgets own their own mutex and never call back into
+// DetailView, so the parent can hold d.mu while invoking their methods
+// (applyDiff / applyPipeline / applyTrace do this). Never invert the
+// order: a child widget must not acquire DetailView.mu.
 type DetailView struct {
 	g   *gocui.Gui
 	app *appcontext.AppContext
@@ -100,15 +101,30 @@ type DetailView struct {
 	diffLoading bool
 	diffErr     error
 	diffStats   *models.DiffStats
+
+	pipelineStages  *PipelineStagesView
+	jobLog          *JobLogView
+	pipelineDetail  *models.PipelineDetail
+	pipelineSeq     uint64
+	pipelineLoading bool
+	pipelineErr     error
+
+	logOpen    bool
+	logJob     *models.PipelineJob
+	logSeq     uint64
+	logLoading bool
+	logErr     error
 }
 
 func NewDetail(g *gocui.Gui, app *appcontext.AppContext) *DetailView {
 	return &DetailView{
-		g:           g,
-		app:         app,
-		diffTree:    NewDiffTree(),
-		diffContent: NewDiffContent(),
-		tabBar:      renderTabBar(DetailTabOverview),
+		g:              g,
+		app:            app,
+		diffTree:       NewDiffTree(),
+		diffContent:    NewDiffContent(),
+		pipelineStages: NewPipelineStages(),
+		jobLog:         NewJobLog(),
+		tabBar:         renderTabBar(DetailTabOverview),
 	}
 }
 
@@ -215,11 +231,42 @@ func (d *DetailView) DiffTree() *DiffTreeView { return d.diffTree }
 // DiffContent returns the Diff-tab's content widget.
 func (d *DetailView) DiffContent() *DiffContentView { return d.diffContent }
 
+// PipelineStages returns the Pipeline-tab stages widget.
+func (d *DetailView) PipelineStages() *PipelineStagesView { return d.pipelineStages }
+
+// JobLog returns the Pipeline-tab job log widget.
+func (d *DetailView) JobLog() *JobLogView { return d.jobLog }
+
+// LogOpen reports whether the inline job log is currently mounted.
+// Layout reads this to decide whether the stages pane or the log pane
+// owns the Pipeline-tab rect.
+func (d *DetailView) LogOpen() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.logOpen
+}
+
+// PipelineDetailSnapshot returns the most recent pipeline detail fetched
+// for the current MR, or nil. Exposed for tests.
+func (d *DetailView) PipelineDetailSnapshot() *models.PipelineDetail {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.pipelineDetail
+}
+
 // SetTab advances the active tab and triggers a diff fetch when switching
 // to the Diff tab for the first time on the current MR. Project is the
 // owning project (needed for the API call); pass nil to skip the fetch
 // (e.g., when the Detail pane holds no MR yet). Focus shift is queued on
 // pendingFocus and picked up by the layout once sub-panes exist.
+//
+// Leaving the Pipeline tab with the inline job log open resets the log
+// state so re-entering Pipeline always starts on the stages pane. Without
+// this reset, focusTargetForTab(Pipeline) would point to the stages pane
+// while managePipelineSubpanes still mounts the log pane — resulting in
+// a wrapped ErrUnknownView from SetCurrentView on the next layout tick.
 func (d *DetailView) SetTab(tab DetailTab, project *models.Project) {
 	if tab < 0 || tab >= detailTabCount {
 		return
@@ -228,12 +275,18 @@ func (d *DetailView) SetTab(tab DetailTab, project *models.Project) {
 	prev := d.currentTab
 	d.currentTab = tab
 	d.tabBar = renderTabBar(tab)
+	if prev == DetailTabPipeline && tab != DetailTabPipeline && d.logOpen {
+		d.resetJobLogLocked()
+	}
 	d.pendingFocus = focusTargetForTab(tab)
 	mr := d.mr
 	d.mu.Unlock()
 
 	if tab == DetailTabDiff && prev != DetailTabDiff && mr != nil {
 		d.fetchDiffAsync(context.Background(), project, mr)
+	}
+	if tab == DetailTabPipeline && prev != DetailTabPipeline && mr != nil {
+		d.fetchPipelineAsync(context.Background(), project, mr)
 	}
 }
 
@@ -247,13 +300,13 @@ func (d *DetailView) SetTabSync(ctx context.Context, tab DetailTab, project *mod
 	prev := d.currentTab
 	d.currentTab = tab
 	d.tabBar = renderTabBar(tab)
+	if prev == DetailTabPipeline && tab != DetailTabPipeline && d.logOpen {
+		d.resetJobLogLocked()
+	}
 	mr := d.mr
 	d.mu.Unlock()
 
-	if tab != DetailTabDiff || prev == DetailTabDiff || mr == nil {
-		return nil
-	}
-	if d.app == nil || d.app.GitLab == nil {
+	if mr == nil || d.app == nil || d.app.GitLab == nil {
 		return nil
 	}
 	projectID := 0
@@ -264,11 +317,22 @@ func (d *DetailView) SetTabSync(ctx context.Context, tab DetailTab, project *mod
 		return nil
 	}
 
-	seq := d.beginDiffLoad()
-	data, err := d.app.GitLab.GetMRChanges(ctx, projectID, mr.IID)
-	d.applyDiff(seq, data, err)
-	if err != nil {
-		return fmt.Errorf("detail: fetch mr changes: %w", err)
+	if tab == DetailTabDiff && prev != DetailTabDiff {
+		seq := d.beginDiffLoad()
+		data, err := d.app.GitLab.GetMRChanges(ctx, projectID, mr.IID)
+		d.applyDiff(seq, data, err)
+		if err != nil {
+			return fmt.Errorf("detail: fetch mr changes: %w", err)
+		}
+	}
+
+	if tab == DetailTabPipeline && prev != DetailTabPipeline {
+		seq := d.beginPipelineLoad()
+		detail, err := d.app.GitLab.GetMRPipelineDetail(ctx, projectID, mr.IID)
+		d.applyPipeline(seq, detail, err)
+		if err != nil {
+			return fmt.Errorf("detail: fetch mr pipeline: %w", err)
+		}
 	}
 
 	return nil
@@ -321,7 +385,6 @@ func (d *DetailView) Render(pane *gocui.View) {
 	case DetailTabConversation:
 		pane.WriteString(detailConversationStub + "\n")
 	case DetailTabPipeline:
-		pane.WriteString(detailPipelineStub + "\n")
 	}
 }
 
@@ -343,6 +406,23 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 	}
 	if d.diffContent != nil {
 		d.diffContent.SetFile(nil)
+	}
+
+	d.pipelineSeq++
+	d.pipelineDetail = nil
+	d.pipelineLoading = false
+	d.pipelineErr = nil
+	if d.pipelineStages != nil {
+		d.pipelineStages.ShowLoading()
+	}
+
+	d.logSeq++
+	d.logOpen = false
+	d.logJob = nil
+	d.logLoading = false
+	d.logErr = nil
+	if d.jobLog != nil {
+		d.jobLog.SetJob(nil, "")
 	}
 
 	d.cached = d.renderOverviewLocked()
@@ -486,9 +566,184 @@ func (d *DetailView) applyDiff(seq uint64, data *models.MRDiffData, err error) {
 	}
 }
 
+func (d *DetailView) beginPipelineLoad() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.pipelineSeq++
+	d.pipelineLoading = true
+	d.pipelineErr = nil
+	if d.pipelineStages != nil {
+		d.pipelineStages.ShowLoading()
+	}
+
+	return d.pipelineSeq
+}
+
+func (d *DetailView) fetchPipelineAsync(ctx context.Context, project *models.Project, mr *models.MergeRequest) {
+	if d.app == nil || d.app.GitLab == nil || d.g == nil || project == nil || mr == nil {
+		return
+	}
+	seq := d.beginPipelineLoad()
+	projectID := project.ID
+	iid := mr.IID
+	go func() {
+		detail, err := d.app.GitLab.GetMRPipelineDetail(ctx, projectID, iid)
+		d.g.Update(func(_ *gocui.Gui) error {
+			d.applyPipeline(seq, detail, err)
+
+			return nil
+		})
+	}()
+}
+
+func (d *DetailView) applyPipeline(seq uint64, detail *models.PipelineDetail, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if seq != d.pipelineSeq {
+		return
+	}
+	d.pipelineLoading = false
+	if err != nil {
+		d.pipelineErr = err
+		if d.pipelineStages != nil {
+			d.pipelineStages.ShowError(err.Error())
+		}
+
+		return
+	}
+	d.pipelineDetail = detail
+	if d.pipelineStages != nil {
+		d.pipelineStages.SetDetail(detail)
+	}
+}
+
+// OpenJobLog mounts the inline log pane for the job under the stages
+// cursor, fetches the trace asynchronously, and queues focus to shift to
+// the log pane. No-op if no job is selected (cursor on a header, which
+// should not occur after SetDetail).
+func (d *DetailView) OpenJobLog(project *models.Project) {
+	if d.pipelineStages == nil {
+		return
+	}
+	job := d.pipelineStages.SelectedJob()
+	if job == nil {
+		return
+	}
+
+	if d.app == nil || d.app.GitLab == nil || d.g == nil || project == nil {
+		return
+	}
+	seq := d.beginJobLogLoad(job)
+	projectID := project.ID
+	jobID := job.ID
+	go func() {
+		trace, err := d.app.GitLab.GetJobTrace(context.Background(), projectID, jobID)
+		d.g.Update(func(_ *gocui.Gui) error {
+			d.applyJobTrace(seq, job, trace, err)
+
+			return nil
+		})
+	}()
+}
+
+// OpenJobLogSync is the test entry point — fetches the trace inline so
+// tests running without MainLoop observe the populated log deterministically.
+func (d *DetailView) OpenJobLogSync(ctx context.Context, project *models.Project) error {
+	if d.pipelineStages == nil {
+		return nil
+	}
+	job := d.pipelineStages.SelectedJob()
+	if job == nil {
+		return nil
+	}
+
+	if d.app == nil || d.app.GitLab == nil || project == nil {
+		return nil
+	}
+	seq := d.beginJobLogLoad(job)
+	trace, err := d.app.GitLab.GetJobTrace(ctx, project.ID, job.ID)
+	d.applyJobTrace(seq, job, trace, err)
+	if err != nil {
+		return fmt.Errorf("detail: fetch job trace: %w", err)
+	}
+
+	return nil
+}
+
+// CloseJobLog unmounts the log pane and queues focus back to the stages
+// pane. Idempotent — no-op if the log is not open.
+func (d *DetailView) CloseJobLog() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if !d.logOpen {
+		return
+	}
+	d.resetJobLogLocked()
+	d.pendingFocus = keymap.ViewDetailPipelineStages
+}
+
+// resetJobLogLocked clears the inline-log state. Caller must hold d.mu.
+// Does NOT touch pendingFocus — callers that need to hand focus somewhere
+// set it themselves (CloseJobLog → stages; SetTab → whatever the new tab
+// requests).
+func (d *DetailView) resetJobLogLocked() {
+	d.logOpen = false
+	d.logJob = nil
+	d.logLoading = false
+	d.logErr = nil
+	d.logSeq++
+	if d.jobLog != nil {
+		d.jobLog.SetJob(nil, "")
+	}
+}
+
+func (d *DetailView) beginJobLogLoad(job *models.PipelineJob) uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.logSeq++
+	d.logOpen = true
+	d.logJob = job
+	d.logLoading = true
+	d.logErr = nil
+	d.pendingFocus = keymap.ViewDetailPipelineJobLog
+	if d.jobLog != nil {
+		d.jobLog.ShowLoading()
+	}
+
+	return d.logSeq
+}
+
+func (d *DetailView) applyJobTrace(seq uint64, job *models.PipelineJob, trace string, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if seq != d.logSeq || !d.logOpen {
+		return
+	}
+	d.logLoading = false
+	if err != nil {
+		d.logErr = err
+		if d.jobLog != nil {
+			d.jobLog.ShowError(err.Error())
+		}
+
+		return
+	}
+	if d.jobLog != nil {
+		d.jobLog.SetJob(job, trace)
+	}
+}
+
 func focusTargetForTab(tab DetailTab) string {
-	if tab == DetailTabDiff {
+	switch tab {
+	case DetailTabDiff:
 		return keymap.ViewDetailDiffTree
+	case DetailTabPipeline:
+		return keymap.ViewDetailPipelineStages
 	}
 
 	return keymap.ViewDetail

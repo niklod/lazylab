@@ -346,6 +346,26 @@ func (s *MRDiffSuite) TestTabCycle_BracketAdvancesToDiffThenOverview() {
 	s.Require().Equal(keymap.ViewDetail, s.g.CurrentView().Name())
 }
 
+func (s *MRDiffSuite) TestDiffTab_TreeHighlightSurvivesTabCycleAway() {
+	s.loadAndSelectMR()
+
+	pane, err := s.g.View(keymap.ViewDetailDiffTree)
+	s.Require().NoError(err)
+	s.Require().True(pane.Highlight, "tree highlight on initial mount")
+
+	// Cycle away to Overview, then back to Diff. Sub-panes unmount and
+	// remount; Render must re-apply Highlight to the fresh pane.
+	s.v.Detail.SetTab(views.DetailTabOverview, nil)
+	s.Require().NoError(s.layoutTick())
+	s.v.Detail.SetTab(views.DetailTabDiff, s.v.Repos.SelectedProject())
+	s.Require().NoError(s.layoutTick())
+
+	pane, err = s.g.View(keymap.ViewDetailDiffTree)
+	s.Require().NoError(err)
+	s.Require().True(pane.Highlight,
+		"highlight property must be re-applied to the remounted diff tree pane")
+}
+
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; parallel runs race.
 func TestMRDiffSuite(t *testing.T) {
 	suite.Run(t, new(MRDiffSuite))
