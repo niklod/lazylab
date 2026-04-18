@@ -36,3 +36,4 @@ uv.lock
 /dist/
 *.test
 coverage.out
+/design
