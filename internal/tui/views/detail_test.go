@@ -116,6 +116,60 @@ func (s *DetailViewSuite) TestRender_WithMR_RendersAllOverviewFields() {
 	s.Require().Contains(buf, "Comments: 7")
 }
 
+func (s *DetailViewSuite) TestReviewersText_EmptyReturnsEmpty() {
+	s.Require().Empty(reviewersText(nil))
+	s.Require().Empty(reviewersText([]models.User{}))
+}
+
+func (s *DetailViewSuite) TestReviewersText_SingleReviewer() {
+	got := reviewersText([]models.User{{Username: "alice"}})
+
+	s.Require().Equal("@alice", got)
+}
+
+func (s *DetailViewSuite) TestReviewersText_MultipleReviewersCommaSeparated() {
+	got := reviewersText([]models.User{
+		{Username: "alice"},
+		{Username: "bob"},
+		{Username: "carol"},
+	})
+
+	s.Require().Equal("@alice, @bob, @carol", got)
+}
+
+func (s *DetailViewSuite) TestRender_MRWithReviewers_RendersReviewersLine() {
+	s.detail.SetMR(nil, &models.MergeRequest{
+		IID:    1,
+		Title:  "T",
+		State:  models.MRStateOpened,
+		Author: models.User{Username: "alice"},
+		Reviewers: []models.User{
+			{Username: "bob"},
+			{Username: "carol"},
+		},
+	})
+
+	s.detail.Render(s.pane())
+
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, "@alice")
+	s.Require().Contains(buf, "Reviewers: @bob, @carol")
+}
+
+func (s *DetailViewSuite) TestRender_MRWithoutReviewers_OmitsReviewersLine() {
+	s.detail.SetMR(nil, &models.MergeRequest{
+		IID:       1,
+		Title:     "T",
+		State:     models.MRStateOpened,
+		Author:    models.User{Username: "alice"},
+		Reviewers: nil,
+	})
+
+	s.detail.Render(s.pane())
+
+	s.Require().NotContains(s.pane().Buffer(), "Reviewers:")
+}
+
 func (s *DetailViewSuite) TestRender_WithConflicts_ShowsConflictText() {
 	s.detail.SetMR(nil, &models.MergeRequest{
 		IID:          1,
@@ -247,18 +301,20 @@ func (s *DetailViewSuite) TestCommentsText_NoneResolved_YellowWarnIcon() {
 func (s *DetailViewSuite) TestSetMRSync_FetchesStatsAndRendersResolved() {
 	var hits atomic.Int32
 	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/discussions") {
-			http.NotFound(w, r)
-
-			return
-		}
-		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `[
-			{"id":"d1","notes":[{"id":1,"resolvable":true,"resolved":true}]},
-			{"id":"d2","notes":[{"id":2,"resolvable":true,"resolved":false}]},
-			{"id":"d3","notes":[{"id":3,"resolvable":false,"resolved":false}]}
-		]`)
+		switch {
+		case strings.Contains(r.URL.Path, "/discussions"):
+			hits.Add(1)
+			_, _ = fmt.Fprint(w, `[
+				{"id":"d1","notes":[{"id":1,"resolvable":true,"resolved":true}]},
+				{"id":"d2","notes":[{"id":2,"resolvable":true,"resolved":false}]},
+				{"id":"d3","notes":[{"id":3,"resolvable":false,"resolved":false}]}
+			]`)
+		case strings.Contains(r.URL.Path, "/approvals"):
+			_, _ = fmt.Fprint(w, `{"approved":true,"approvals_required":0,"approvals_left":0}`)
+		default:
+			http.NotFound(w, r)
+		}
 	})
 	mr := &models.MergeRequest{IID: 11, Title: "T", State: models.MRStateOpened, UserNotesCount: 4}
 	project := &models.Project{ID: 7, PathWithNamespace: "grp/x"}
@@ -485,6 +541,145 @@ func (s *DetailViewSuite) TestSetMR_Nil_ClearsDiffWidgets() {
 
 	s.Require().Equal(0, s.detail.DiffTree().RowCount())
 	s.Require().Nil(s.detail.DiffContent().CurrentFile())
+}
+
+func (s *DetailViewSuite) TestApprovalsText_NilReturnsLoadingHint() {
+	got := approvalsText(nil)
+
+	s.Require().Contains(got, "loading")
+	s.Require().Contains(got, ansiDim)
+	s.Require().Contains(got, ansiReset)
+}
+
+func (s *DetailViewSuite) TestApprovalsText_ZeroRequired_RendersDimNoApprovalsRequired() {
+	got := approvalsText(&models.ApprovalStatus{ApprovalsRequired: 0, ApprovalsLeft: 0, Approved: true})
+
+	s.Require().Contains(got, "no approvals required")
+	s.Require().Contains(got, ansiDim)
+	s.Require().NotContains(got, iconOK)
+	s.Require().NotContains(got, iconBad)
+}
+
+func (s *DetailViewSuite) TestApprovalsText_AllReceived_RendersGreenCheck() {
+	got := approvalsText(&models.ApprovalStatus{ApprovalsRequired: 1, ApprovalsLeft: 0, Approved: true})
+
+	s.Require().Contains(got, ansiGreen)
+	s.Require().Contains(got, iconOK)
+	s.Require().Contains(got, "1/1 approvals received")
+	s.Require().Contains(got, ansiReset)
+}
+
+func (s *DetailViewSuite) TestApprovalsText_SomeMissing_RendersRedCross() {
+	got := approvalsText(&models.ApprovalStatus{ApprovalsRequired: 2, ApprovalsLeft: 2, Approved: false})
+
+	s.Require().Contains(got, ansiRed)
+	s.Require().Contains(got, iconBad)
+	s.Require().Contains(got, "0/2 approvals received")
+	s.Require().Contains(got, ansiReset)
+}
+
+func (s *DetailViewSuite) TestApprovalsText_PartialReceived_RendersRedCross() {
+	got := approvalsText(&models.ApprovalStatus{ApprovalsRequired: 3, ApprovalsLeft: 1, Approved: false})
+
+	s.Require().Contains(got, ansiRed)
+	s.Require().Contains(got, iconBad)
+	s.Require().Contains(got, "2/3 approvals received")
+}
+
+func (s *DetailViewSuite) TestApplyApprovals_StaleSeqIgnored() {
+	mr := &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(nil, mr)
+
+	s.detail.applyApprovals(0, &models.ApprovalStatus{ApprovalsRequired: 1, ApprovalsLeft: 0, Approved: true}, nil)
+
+	s.Require().Nil(s.detail.Approvals(), "stale seq must not clobber current state")
+}
+
+func (s *DetailViewSuite) TestSetMRSync_FetchesApprovalsAndRendersRedCross() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/discussions"):
+			_, _ = fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/approvals"):
+			_, _ = fmt.Fprint(w, `{"approved":false,"approvals_required":2,"approvals_left":2}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 7, PathWithNamespace: "grp/x"}
+
+	s.Require().NoError(s.detail.SetMRSync(context.Background(), project, mr))
+	s.detail.Render(s.pane())
+
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, iconBad+" 0/2 approvals received")
+	approvals := s.detail.Approvals()
+	s.Require().NotNil(approvals)
+	s.Require().Equal(2, approvals.ApprovalsRequired)
+	s.Require().Equal(2, approvals.ApprovalsLeft)
+}
+
+func (s *DetailViewSuite) TestSetMRSync_FetchesApprovalsAndRendersGreenCheck() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/discussions"):
+			_, _ = fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/approvals"):
+			_, _ = fmt.Fprint(w, `{"approved":true,"approvals_required":1,"approvals_left":0}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 7, PathWithNamespace: "grp/x"}
+
+	s.Require().NoError(s.detail.SetMRSync(context.Background(), project, mr))
+	s.detail.Render(s.pane())
+
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, iconOK+" 1/1 approvals received")
+}
+
+func (s *DetailViewSuite) TestSetMRSync_ApprovalsUpstreamError_LeavesLoadingHint() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/discussions"):
+			_, _ = fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/approvals"):
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"message":"boom"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	project := &models.Project{ID: 7, PathWithNamespace: "grp/x"}
+
+	err := s.detail.SetMRSync(context.Background(), project, mr)
+
+	s.Require().Error(err)
+	s.Require().ErrorContains(err, "fetch mr approvals")
+	s.Require().Nil(s.detail.Approvals(), "upstream error must leave approvals nil")
+	s.detail.Render(s.pane())
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, "loading")
+}
+
+func (s *DetailViewSuite) TestRenderOverview_BeforeApprovalsFetch_ShowsLoadingHint() {
+	mr := &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(nil, mr)
+
+	s.detail.Render(s.pane())
+
+	buf := s.pane().Buffer()
+	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, "loading")
 }
 
 func (s *DetailViewSuite) TestDiffStatsText_NilReturnsLoadingHint() {

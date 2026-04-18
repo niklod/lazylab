@@ -9,6 +9,7 @@ type MergeRequest struct {
 	Description    string     `json:"description,omitempty"`
 	State          MRState    `json:"state"`
 	Author         User       `json:"author"`
+	Reviewers      []User     `json:"reviewers,omitempty"`
 	SourceBranch   string     `json:"source_branch"`
 	TargetBranch   string     `json:"target_branch"`
 	WebURL         string     `json:"web_url"`

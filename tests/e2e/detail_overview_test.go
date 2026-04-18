@@ -38,6 +38,10 @@ const detailOpenedMRsFixture = `[
 		"id":1,"iid":10,"title":"Feature Alpha",
 		"state":"opened",
 		"author":{"id":1,"username":"alice","name":"A","web_url":"u"},
+		"reviewers":[
+			{"id":3,"username":"carol","name":"C","web_url":"u"},
+			{"id":4,"username":"dave","name":"D","web_url":"u"}
+		],
 		"source_branch":"feat/alpha","target_branch":"main",
 		"web_url":"u",
 		"created_at":"2026-04-10T14:30:00Z",
@@ -81,6 +85,8 @@ func (s *DetailOverviewSuite) SetupTest() {
 			_, _ = fmt.Fprint(w, `[
 				{"old_path":"a","new_path":"a","diff":"@@ -1 +1 @@\n-old\n+new\n"}
 			]`)
+		case strings.Contains(r.URL.Path, "/approvals"):
+			_, _ = fmt.Fprint(w, `{"approved":true,"approvals_required":0,"approvals_left":0}`)
 		case strings.Contains(r.URL.Path, "/merge_requests"):
 			_, _ = fmt.Fprint(w, detailOpenedMRsFixture)
 		case strings.HasSuffix(r.URL.Path, "/user"):
@@ -173,6 +179,7 @@ func (s *DetailOverviewSuite) TestEnterOnMR_RendersOverviewFields() {
 	buf := s.detailBuffer()
 	s.Require().Contains(buf, "!10 Feature Alpha")
 	s.Require().Contains(buf, "@alice")
+	s.Require().Contains(buf, "Reviewers: @carol, @dave")
 	s.Require().Contains(buf, "2026-04-10 14:30")
 	s.Require().Contains(buf, "O opened")
 	s.Require().Contains(buf, "feat/alpha \u2192 main")
@@ -209,6 +216,7 @@ func (s *DetailOverviewSuite) TestEnterOnSecondMR_ReplacesOverview() {
 	s.Require().Contains(buf, "fix/beta \u2192 main")
 	s.Require().Contains(buf, "\u2717 Has conflicts")
 	s.Require().Contains(buf, "Comments: 0")
+	s.Require().NotContains(buf, "Reviewers:")
 	s.Require().NotContains(buf, "Feature Alpha")
 }
 
@@ -242,6 +250,94 @@ func (s *DetailOverviewSuite) TestSetMRSync_RendersResolvedThreadCount() {
 	s.Require().NoError(s.layoutTick())
 
 	s.Require().Contains(s.detailBuffer(), "Comments: 3 \u26A0 (1/2 resolved)")
+}
+
+func (s *DetailOverviewSuite) rewireHandler(handler http.HandlerFunc) {
+	s.srv.Close()
+	s.srv = httptest.NewServer(handler)
+	newClient, err := gitlab.New(config.GitLabConfig{URL: s.srv.URL, Token: "e2e-secret"}, gitlab.WithHTTPClient(s.srv.Client()))
+	s.Require().NoError(err)
+	s.app.GitLab = newClient
+}
+
+func (s *DetailOverviewSuite) TestOverview_NoRequiredApprovals_RendersDimHint() {
+	s.loadProjectAndMRs()
+
+	s.Require().NoError(s.dispatch(keymap.ViewMRs, gocui.KeyEnter))
+
+	project := s.v.Repos.SelectedProject()
+	mr := s.v.MRs.SelectedMR()
+	s.Require().NoError(s.v.Detail.SetMRSync(context.Background(), project, mr))
+	s.Require().NoError(s.layoutTick())
+
+	buf := s.detailBuffer()
+	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, "no approvals required")
+}
+
+func (s *DetailOverviewSuite) TestOverview_ApprovalsMissing_RendersRedCross() {
+	s.rewireHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/projects"):
+			_, _ = fmt.Fprint(w, detailProjectsFixture)
+		case strings.Contains(r.URL.Path, "/discussions"):
+			_, _ = fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/diffs"):
+			_, _ = fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/approvals"):
+			_, _ = fmt.Fprint(w, `{"approved":false,"approvals_required":1,"approvals_left":1}`)
+		case strings.Contains(r.URL.Path, "/merge_requests"):
+			_, _ = fmt.Fprint(w, detailOpenedMRsFixture)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	s.loadProjectAndMRs()
+
+	project := s.v.Repos.SelectedProject()
+	s.Require().NotNil(project)
+	mr := s.v.MRs.SelectedMR()
+	s.Require().NotNil(mr)
+	s.Require().NoError(s.v.Detail.SetMRSync(context.Background(), project, mr))
+	s.Require().NoError(s.layoutTick())
+
+	buf := s.detailBuffer()
+	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, "\u2717 0/1 approvals received")
+	s.Require().NotContains(buf, "\u2713 0/1")
+}
+
+func (s *DetailOverviewSuite) TestOverview_AllApprovalsReceived_RendersGreenCheck() {
+	s.rewireHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/projects"):
+			_, _ = fmt.Fprint(w, detailProjectsFixture)
+		case strings.Contains(r.URL.Path, "/discussions"):
+			_, _ = fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/diffs"):
+			_, _ = fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/approvals"):
+			_, _ = fmt.Fprint(w, `{"approved":true,"approvals_required":2,"approvals_left":0}`)
+		case strings.Contains(r.URL.Path, "/merge_requests"):
+			_, _ = fmt.Fprint(w, detailOpenedMRsFixture)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	s.loadProjectAndMRs()
+
+	project := s.v.Repos.SelectedProject()
+	s.Require().NotNil(project)
+	mr := s.v.MRs.SelectedMR()
+	s.Require().NotNil(mr)
+	s.Require().NoError(s.v.Detail.SetMRSync(context.Background(), project, mr))
+	s.Require().NoError(s.layoutTick())
+
+	buf := s.detailBuffer()
+	s.Require().Contains(buf, "Approvals:")
+	s.Require().Contains(buf, "\u2713 2/2 approvals received")
 }
 
 func (s *DetailOverviewSuite) TestEnterOnEmptyMRList_LeavesEmptyHint() {

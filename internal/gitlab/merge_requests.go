@@ -267,6 +267,7 @@ func toDomainMergeRequestFromBasic(mr *gogitlab.BasicMergeRequest, projectPath s
 		Description:    mr.Description,
 		State:          models.MRState(mr.State),
 		Author:         domainUserFromBasic(mr.Author),
+		Reviewers:      domainUsersFromBasic(mr.Reviewers),
 		SourceBranch:   mr.SourceBranch,
 		TargetBranch:   mr.TargetBranch,
 		WebURL:         mr.WebURL,
@@ -315,6 +316,21 @@ func toDomainApproval(a *gogitlab.MergeRequestApprovals) *models.ApprovalStatus 
 		ApprovalsLeft:     int(a.ApprovalsLeft),
 		ApprovedBy:        approvedBy,
 	}
+}
+
+func domainUsersFromBasic(users []*gogitlab.BasicUser) []models.User {
+	if len(users) == 0 {
+		return nil
+	}
+	out := make([]models.User, 0, len(users))
+	for _, u := range users {
+		if u == nil {
+			continue
+		}
+		out = append(out, domainUserFromBasic(u))
+	}
+
+	return out
 }
 
 func domainUserFromBasic(u *gogitlab.BasicUser) models.User {

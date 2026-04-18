@@ -87,6 +87,9 @@ type DetailView struct {
 	cached   string
 	statsSeq uint64
 
+	approvals    *models.ApprovalStatus
+	approvalsSeq uint64
+
 	currentTab   DetailTab
 	pendingFocus string
 	tabBar       string
@@ -128,11 +131,12 @@ func (d *DetailView) ConsumePendingFocus() string {
 // stats fetch. No fetch happens if project is nil or the view has no
 // GitLab client (tests that instantiate DetailView without an app skip it).
 func (d *DetailView) SetMR(project *models.Project, mr *models.MergeRequest) {
-	seq, projectID, iid := d.commitMR(project, mr)
+	statsSeq, approvalsSeq, projectID, iid := d.commitMR(project, mr)
 	if projectID == 0 || d.app == nil || d.app.GitLab == nil || d.g == nil {
 		return
 	}
-	go d.fetchStats(context.Background(), seq, projectID, iid)
+	go d.fetchStats(context.Background(), statsSeq, projectID, iid)
+	go d.fetchApprovals(context.Background(), approvalsSeq, projectID, iid)
 	// Always prefetch the diff — Overview shows a +N -M line derived from
 	// the same payload the Diff tab consumes, so the fetch doubles as the
 	// stats source. cache.Do dedupes when the user actually opens Diff.
@@ -143,14 +147,20 @@ func (d *DetailView) SetMR(project *models.Project, mr *models.MergeRequest) {
 // that mirrors MRsView.SetProjectSync so tests running without MainLoop
 // observe both fields deterministically.
 func (d *DetailView) SetMRSync(ctx context.Context, project *models.Project, mr *models.MergeRequest) error {
-	seq, projectID, iid := d.commitMR(project, mr)
+	statsSeq, approvalsSeq, projectID, iid := d.commitMR(project, mr)
 	if projectID == 0 || d.app == nil || d.app.GitLab == nil {
 		return nil
 	}
 	stats, err := d.app.GitLab.GetMRDiscussionStats(ctx, projectID, iid)
-	d.applyStats(seq, stats, err)
+	d.applyStats(statsSeq, stats, err)
 	if err != nil {
 		return fmt.Errorf("detail: fetch discussion stats: %w", err)
+	}
+
+	approvals, err := d.app.GitLab.GetMRApprovals(ctx, projectID, iid)
+	d.applyApprovals(approvalsSeq, approvals, err)
+	if err != nil {
+		return fmt.Errorf("detail: fetch mr approvals: %w", err)
 	}
 
 	return nil
@@ -170,6 +180,14 @@ func (d *DetailView) Stats() *models.DiscussionStats {
 	defer d.mu.Unlock()
 
 	return d.stats
+}
+
+// Approvals returns the most recent ApprovalStatus, or nil if none loaded.
+func (d *DetailView) Approvals() *models.ApprovalStatus {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.approvals
 }
 
 // DiffStatsSnapshot returns the most recent added/removed line counts, or
@@ -307,13 +325,15 @@ func (d *DetailView) Render(pane *gocui.View) {
 	}
 }
 
-func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) (seq uint64, projectID, iid int) {
+func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) (statsSeq, approvalsSeq uint64, projectID, iid int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.mr = mr
 	d.stats = nil
+	d.approvals = nil
 	d.statsSeq++
+	d.approvalsSeq++
 	d.diffSeq++
 	d.diffLoading = false
 	d.diffErr = nil
@@ -325,19 +345,28 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 		d.diffContent.SetFile(nil)
 	}
 
-	if mr == nil {
-		d.cached = ""
-
-		return d.statsSeq, 0, 0
-	}
-	d.cached = renderOverview(mr, nil, nil)
+	d.cached = d.renderOverviewLocked()
 
 	pid := 0
 	if project != nil {
 		pid = project.ID
 	}
+	if mr == nil {
+		return d.statsSeq, d.approvalsSeq, 0, 0
+	}
 
-	return d.statsSeq, pid, mr.IID
+	return d.statsSeq, d.approvalsSeq, pid, mr.IID
+}
+
+// renderOverviewLocked rebuilds the cached Overview body from the current
+// state fields. Caller must hold d.mu. Returns "" when no MR is selected —
+// the Render path surfaces detailStatusEmpty in that case.
+func (d *DetailView) renderOverviewLocked() string {
+	if d.mr == nil {
+		return ""
+	}
+
+	return renderOverview(d.mr, d.stats, d.diffStats, d.approvals)
 }
 
 func (d *DetailView) fetchStats(ctx context.Context, seq uint64, projectID, iid int) {
@@ -353,14 +382,31 @@ func (d *DetailView) applyStats(seq uint64, stats *models.DiscussionStats, err e
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if seq != d.statsSeq || d.mr == nil {
-		return
-	}
-	if err != nil {
+	if err != nil || seq != d.statsSeq || d.mr == nil {
 		return
 	}
 	d.stats = stats
-	d.cached = renderOverview(d.mr, stats, d.diffStats)
+	d.cached = d.renderOverviewLocked()
+}
+
+func (d *DetailView) fetchApprovals(ctx context.Context, seq uint64, projectID, iid int) {
+	approvals, err := d.app.GitLab.GetMRApprovals(ctx, projectID, iid)
+	d.g.Update(func(_ *gocui.Gui) error {
+		d.applyApprovals(seq, approvals, err)
+
+		return nil
+	})
+}
+
+func (d *DetailView) applyApprovals(seq uint64, approvals *models.ApprovalStatus, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if err != nil || seq != d.approvalsSeq || d.mr == nil {
+		return
+	}
+	d.approvals = approvals
+	d.cached = d.renderOverviewLocked()
 }
 
 func (d *DetailView) beginDiffLoad() uint64 {
@@ -422,9 +468,7 @@ func (d *DetailView) applyDiff(seq uint64, data *models.MRDiffData, err error) {
 	}
 	stats := data.Stats()
 	d.diffStats = &stats
-	if d.mr != nil {
-		d.cached = renderOverview(d.mr, d.stats, d.diffStats)
-	}
+	d.cached = d.renderOverviewLocked()
 	if d.diffTree != nil {
 		d.diffTree.SetFiles(files)
 	}
@@ -469,18 +513,22 @@ func renderTabBar(active DetailTab) string {
 	return sb.String()
 }
 
-func renderOverview(mr *models.MergeRequest, stats *models.DiscussionStats, diffStats *models.DiffStats) string {
+func renderOverview(mr *models.MergeRequest, stats *models.DiscussionStats, diffStats *models.DiffStats, approvals *models.ApprovalStatus) string {
 	var sb strings.Builder
 	sb.Grow(256)
 
 	fmt.Fprintf(&sb, "!%d %s\n\n", mr.IID, mr.Title)
 	fmt.Fprintf(&sb, "Author:   @%s\n", mr.Author.Username)
+	if reviewers := reviewersText(mr.Reviewers); reviewers != "" {
+		fmt.Fprintf(&sb, "Reviewers: %s\n", reviewers)
+	}
 	fmt.Fprintf(&sb, "Created:  %s\n", mr.CreatedAt.Format(detailDateFormat))
 	fmt.Fprintf(&sb, "Status:   %s %s\n", mrStateLetter(mr.State), mr.State)
 	fmt.Fprintf(&sb, "Branches: %s%s%s\n", mr.SourceBranch, detailBranchesSep, mr.TargetBranch)
 	fmt.Fprintf(&sb, "Conflicts: %s\n", conflictText(mr.HasConflicts))
 	fmt.Fprintf(&sb, "Changes:  %s\n", diffStatsText(diffStats))
 	fmt.Fprintf(&sb, "Comments: %s\n", commentsText(mr.UserNotesCount, stats))
+	fmt.Fprintf(&sb, "Approvals: %s\n", approvalsText(approvals))
 
 	return sb.String()
 }
@@ -524,5 +572,45 @@ func diffStatsText(stats *models.DiffStats) string {
 	return fmt.Sprintf("%s+%d%s %s-%d%s",
 		ansiGreen, stats.Added, ansiReset,
 		ansiRed, stats.Removed, ansiReset,
+	)
+}
+
+// reviewersText joins reviewer usernames into a comma-separated list.
+// Returns "" when the MR has no reviewers — caller skips the line.
+func reviewersText(reviewers []models.User) string {
+	if len(reviewers) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.Grow(len(reviewers) * 16)
+	for i, u := range reviewers {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteByte('@')
+		sb.WriteString(u.Username)
+	}
+
+	return sb.String()
+}
+
+// approvalsText renders the "Approvals:" overview line. The `required == 0`
+// dim branch avoids misleading `0/0 ✗` on projects with no approval rules.
+func approvalsText(a *models.ApprovalStatus) string {
+	if a == nil {
+		return ansiDim + "loading…" + ansiReset
+	}
+	if a.ApprovalsRequired == 0 {
+		return ansiDim + "no approvals required" + ansiReset
+	}
+
+	received := a.ApprovalsRequired - a.ApprovalsLeft
+	color, icon := ansiRed, iconBad
+	if a.Approved {
+		color, icon = ansiGreen, iconOK
+	}
+
+	return fmt.Sprintf("%s%s %d/%d approvals received%s",
+		color, icon, received, a.ApprovalsRequired, ansiReset,
 	)
 }
