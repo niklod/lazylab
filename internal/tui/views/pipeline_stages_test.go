@@ -3,13 +3,16 @@ package views
 import (
 	"strings"
 	"testing"
+	"time"
 
 	goerrors "github.com/go-errors/errors"
 	"github.com/jesseduffield/gocui"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/niklod/lazylab/internal/models"
 	"github.com/niklod/lazylab/internal/tui/keymap"
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 type PipelineStagesSuite struct {
@@ -107,6 +110,34 @@ func (s *PipelineStagesSuite) TestMoveCursorToStartEnd() {
 	s.Require().Equal("build:bin", s.v.SelectedJob().Name)
 }
 
+func (s *PipelineStagesSuite) TestSetDetail_PreservesCursorOnRefresh() {
+	s.v.SetDetail(s.detail())
+	s.v.MoveCursor(2)
+	s.Require().Equal("test:lint", s.v.SelectedJob().Name, "sanity")
+
+	refreshed := s.detail()
+	refreshed.Jobs[2].Status = models.PipelineStatusRunning
+	s.v.SetDetail(refreshed)
+
+	s.Require().Equal("test:lint", s.v.SelectedJob().Name,
+		"auto-refresh must not yank the cursor back to the first job")
+}
+
+func (s *PipelineStagesSuite) TestSetDetail_CursorFallsBackWhenJobDisappears() {
+	s.v.SetDetail(s.detail())
+	s.v.MoveCursor(3)
+	s.Require().Equal("deploy:prod", s.v.SelectedJob().Name)
+
+	s.v.SetDetail(&models.PipelineDetail{
+		Jobs: []models.PipelineJob{
+			{ID: 99, Name: "fresh", Stage: "build", Status: models.PipelineStatusRunning},
+		},
+	})
+
+	s.Require().Equal("fresh", s.v.SelectedJob().Name,
+		"missing job falls back to first row of the new pipeline")
+}
+
 func (s *PipelineStagesSuite) TestSetDetail_NilShowsEmptyHint() {
 	s.v.SetDetail(nil)
 
@@ -132,7 +163,7 @@ func (s *PipelineStagesSuite) TestShowLoadingAndError() {
 
 	s.v.ShowError("boom")
 	s.Require().Contains(s.v.statusSnapshot(), "boom")
-	s.Require().Contains(s.v.statusSnapshot(), ansiRed)
+	s.Require().Contains(s.v.statusSnapshot(), theme.FgErr)
 }
 
 func (s *PipelineStagesSuite) TestRender_RendersStagesAndJobs() {
@@ -149,6 +180,60 @@ func (s *PipelineStagesSuite) TestRender_RendersStagesAndJobs() {
 	s.Require().Contains(buf, "test:unit")
 	s.Require().Contains(buf, "12s")
 	s.Require().Contains(buf, "1m 30s")
+	s.Require().Regexp(`   \x1b\[[^m]*m\x{2713} build:bin`, buf, "3-space indent + ok colour + glyph")
+}
+
+func (s *PipelineStagesSuite) TestRender_StagesFooterContainsSeparatorOverallAndKeybinds() {
+	s.v.SetDetail(&models.PipelineDetail{
+		Pipeline: models.Pipeline{
+			ID:          91422,
+			Status:      models.PipelineStatusFailed,
+			SHA:         "a3f7b2e0f1d2c3b4a5",
+			CreatedAt:   time.Now().Add(-14 * time.Minute),
+			TriggeredBy: &models.User{Username: "mira.k"},
+		},
+		Jobs: []models.PipelineJob{
+			{ID: 1, Name: "compile", Stage: "build", Status: models.PipelineStatusSuccess},
+		},
+	})
+
+	pane, err := s.g.View(keymap.ViewDetailPipelineStages)
+	s.Require().NoError(err)
+	s.v.Render(pane)
+
+	buf := pane.Buffer()
+	s.Require().Contains(buf, "\u2500", "separator uses U+2500 dashes")
+	s.Require().Contains(buf, "Overall", "overall summary label")
+	s.Require().Contains(buf, "failed", "overall status label")
+	s.Require().Contains(buf, "a3f7b2e", "commit short SHA")
+	s.Require().Contains(buf, "ago", "relative age fragment")
+	s.Require().Contains(buf, "@mira.k", "triggered-by fragment with username")
+	s.Require().Contains(buf, "j/k", "keybind strip shows j/k hint")
+	s.Require().Contains(buf, "Enter", "keybind strip shows Enter")
+	s.Require().Contains(buf, "retry", "keybind strip shows retry")
+}
+
+func (s *PipelineStagesSuite) TestRender_CursorTracksChromeOffset() {
+	s.v.SetChrome("Detail · !482", "Pipeline · #91422 · 4m 12s")
+	s.v.SetDetail(s.detail())
+
+	pane, err := s.g.View(keymap.ViewDetailPipelineStages)
+	s.Require().NoError(err)
+
+	s.v.Render(pane)
+
+	_, cy := pane.Cursor()
+	s.Require().Equal(3, cy,
+		"cursor y must land on the first job row — chrome+blank add 2 offset, cursor index 1 = 1+2 = 3")
+
+	s.v.MoveCursorToEnd()
+	s.v.Render(pane)
+
+	_, cy = pane.Cursor()
+	_, origin := pane.Origin()
+	lastJobIdx := lastJobRow(s.v.rowsSnapshot())
+	s.Require().Equal(lastJobIdx+2-origin, cy,
+		"last-job cursor must land on deploy:prod after accounting for chrome offset and scroll origin")
 }
 
 func (s *PipelineStagesSuite) TestRender_StatusBranch() {
@@ -191,38 +276,135 @@ func TestFormatJobDuration(t *testing.T) {
 func TestPipelineJobStatusIcon_CoversAllKnownStatuses(t *testing.T) {
 	t.Parallel()
 
-	statuses := []models.PipelineStatus{
-		models.PipelineStatusSuccess,
-		models.PipelineStatusFailed,
-		models.PipelineStatusRunning,
-		models.PipelineStatusPending,
-		models.PipelineStatusWaitingForResource,
-		models.PipelineStatusPreparing,
-		models.PipelineStatusCreated,
-		models.PipelineStatusCanceled,
-		models.PipelineStatusSkipped,
-		models.PipelineStatusManual,
-		models.PipelineStatusScheduled,
+	tests := []struct {
+		status    models.PipelineStatus
+		wantGlyph string
+		wantColor string
+	}{
+		{models.PipelineStatusSuccess, "\u2713", theme.FgOK},
+		{models.PipelineStatusFailed, "\u2717", theme.FgErr},
+		{models.PipelineStatusRunning, "\u25CF", theme.FgOK},
+		{models.PipelineStatusPending, "\u25CB", theme.FgDim},
+		{models.PipelineStatusWaitingForResource, "\u25CB", theme.FgDim},
+		{models.PipelineStatusPreparing, "\u25CB", theme.FgDim},
+		{models.PipelineStatusCreated, "\u25CB", theme.FgDim},
+		{models.PipelineStatusSkipped, "\u2298", theme.FgWarn},
+		{models.PipelineStatusManual, "\u25B6", theme.FgDim},
+		{models.PipelineStatusCanceled, "\u2298", theme.FgErr},
+		{models.PipelineStatusScheduled, "\u25B6", theme.FgDim},
 	}
-	for _, st := range statuses {
-		st := st
-		t.Run(string(st), func(t *testing.T) {
+	for _, tt := range tests {
+		tt := tt
+		t.Run(string(tt.status), func(t *testing.T) {
 			t.Parallel()
 
-			got := pipelineJobStatusIcon(st)
-			if !strings.Contains(got, ansiReset) {
-				t.Fatalf("icon for %q missing ansiReset: %q", st, got)
+			got := pipelineJobStatusIcon(tt.status)
+			if !strings.Contains(got, tt.wantGlyph) {
+				t.Fatalf("icon for %q missing glyph %q: %q", tt.status, tt.wantGlyph, got)
+			}
+			if !strings.Contains(got, tt.wantColor) {
+				t.Fatalf("icon for %q missing color prefix: %q", tt.status, got)
+			}
+			if !strings.Contains(got, theme.Reset) {
+				t.Fatalf("icon for %q missing Reset: %q", tt.status, got)
 			}
 		})
 	}
 
 	unknown := pipelineJobStatusIcon(models.PipelineStatus("WEIRD"))
-	if !strings.Contains(unknown, "weird") || !strings.Contains(unknown, ansiDim) {
+	if !strings.Contains(unknown, "weird") || !strings.Contains(unknown, theme.FgDim) {
 		t.Fatalf("unknown status must render dim lowercased label, got %q", unknown)
 	}
 }
 
 func ptrF(v float64) *float64 { return &v }
+
+func TestRenderKeybindStrip_StagesMode(t *testing.T) {
+	t.Parallel()
+
+	strip := renderKeybindStrip(keybindModePipelineStages)
+	for _, want := range []string{"j/k", "Enter", "r", "o", "R", "a", "toggle auto-refresh"} {
+		require.Contains(t, strip, want, "stages strip missing %q", want)
+	}
+	require.Contains(t, strip, theme.FgAccent, "keys painted in accent")
+	require.Contains(t, strip, theme.FgDim, "labels painted in dim")
+}
+
+func TestRenderKeybindStrip_LogMode(t *testing.T) {
+	t.Parallel()
+
+	strip := renderKeybindStrip(keybindModePipelineLog)
+	for _, want := range []string{"j/k", "ctrl+d/u", "y", "copy", "Esc", "close"} {
+		require.Contains(t, strip, want, "log strip missing %q", want)
+	}
+}
+
+func TestRenderOverallLine(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		pipeline    models.Pipeline
+		triggeredBy *models.User
+		wantAll     []string
+		wantNone    []string
+	}{
+		{
+			name: "failed with user and sha",
+			pipeline: models.Pipeline{
+				Status:    models.PipelineStatusFailed,
+				SHA:       "a3f7b2e1234567",
+				CreatedAt: now.Add(-14 * time.Minute),
+			},
+			triggeredBy: &models.User{Username: "mira.k"},
+			wantAll:     []string{"Overall", "failed", "triggered by", "@mira.k", "commit", "a3f7b2e", "14 minutes ago"},
+			wantNone:    []string{"a3f7b2e1"},
+		},
+		{
+			name: "success without user",
+			pipeline: models.Pipeline{
+				Status:    models.PipelineStatusSuccess,
+				SHA:       "abcdefg1234",
+				CreatedAt: now.Add(-3 * time.Hour),
+			},
+			wantAll:  []string{"Overall", "passed", "commit", "abcdefg", "3 hours ago"},
+			wantNone: []string{"triggered by"},
+		},
+		{
+			name: "short sha preserved",
+			pipeline: models.Pipeline{
+				Status:    models.PipelineStatusRunning,
+				SHA:       "abc",
+				CreatedAt: now.Add(-45 * time.Second),
+			},
+			wantAll: []string{"Overall", "running", "commit", "abc", "just now"},
+		},
+		{
+			name: "missing sha omits commit fragment",
+			pipeline: models.Pipeline{
+				Status:    models.PipelineStatusCanceled,
+				CreatedAt: now.Add(-2 * time.Hour),
+			},
+			wantAll:  []string{"Overall", "canceled", "2 hours ago"},
+			wantNone: []string{"commit"},
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := renderOverallLine(tt.pipeline, tt.triggeredBy, now)
+			for _, want := range tt.wantAll {
+				require.Contains(t, got, want, "missing %q", want)
+			}
+			for _, none := range tt.wantNone {
+				require.NotContains(t, got, none, "unexpected %q", none)
+			}
+		})
+	}
+}
 
 // rowsSnapshot returns a defensive copy of the row slice so tests can
 // inspect internal structure without holding the view mutex.

@@ -8,6 +8,7 @@ import (
 	"github.com/jesseduffield/gocui"
 
 	"github.com/niklod/lazylab/internal/models"
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 const (
@@ -26,11 +27,14 @@ const (
 // (colour / bold / reset) — the only escape family a log actually needs —
 // and strips everything else before the body reaches the pane.
 type JobLogView struct {
-	mu        sync.Mutex
-	job       *models.PipelineJob
-	body      string
-	bodyLines int
-	status    string
+	mu          sync.Mutex
+	job         *models.PipelineJob
+	body        string
+	bodyLines   int
+	status      string
+	chromeTitle string
+	chromeMeta  string
+	footer      string
 }
 
 // NewJobLog constructs a view that shows the empty-state hint until
@@ -39,8 +43,12 @@ func NewJobLog() *JobLogView {
 	return &JobLogView{status: jobLogEmptyHint}
 }
 
-// SetJob renders the job header + trace body. Nil job clears back to the
-// empty-state hint.
+// SetJob stores the sanitized trace. The job header is surfaced via the pane
+// chrome (SetChrome) rather than prepended to the body — this keeps the
+// scrollable content free of a line that would otherwise be dragged around
+// by every j/k. The footer ("end of log · N lines · press y to copy · Esc to
+// close") is assembled here so its line count reflects the final body after
+// sanitize+trim.
 func (l *JobLogView) SetJob(job *models.PipelineJob, trace string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -49,6 +57,7 @@ func (l *JobLogView) SetJob(job *models.PipelineJob, trace string) {
 		l.job = nil
 		l.body = ""
 		l.bodyLines = 0
+		l.footer = ""
 		l.status = jobLogEmptyHint
 
 		return
@@ -58,12 +67,12 @@ func (l *JobLogView) SetJob(job *models.PipelineJob, trace string) {
 	sanitized := sanitizeTraceBody(trace)
 	trimmed := strings.TrimRight(sanitized, "\n\t ")
 	if trimmed == "" {
-		trimmed = ansiDim + jobLogEmptyTrace + ansiReset
+		trimmed = theme.FgDim + jobLogEmptyTrace + theme.Reset
 	}
 
-	header := renderJobLogHeader(job)
-	l.body = header + "\n\n" + trimmed
-	l.bodyLines = strings.Count(l.body, "\n") + 1
+	l.body = trimmed
+	l.bodyLines = strings.Count(trimmed, "\n") + 1
+	l.footer = renderJobLogFooter(l.bodyLines)
 	l.status = ""
 }
 
@@ -75,6 +84,7 @@ func (l *JobLogView) ShowLoading() {
 	l.job = nil
 	l.body = ""
 	l.bodyLines = 0
+	l.footer = ""
 	l.status = jobLogLoadingHint
 }
 
@@ -86,7 +96,38 @@ func (l *JobLogView) ShowError(msg string) {
 	l.job = nil
 	l.body = ""
 	l.bodyLines = 0
-	l.status = ansiRed + msg + ansiReset
+	l.footer = ""
+	l.status = theme.FgErr + msg + theme.Reset
+}
+
+// SetChrome updates the title / meta pair drawn on the first line of the
+// pane. Meta is right-aligned per design/project/wireframes/pipeline.js:43.
+func (l *JobLogView) SetChrome(title, meta string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.chromeTitle = title
+	l.chromeMeta = meta
+}
+
+// CopyBody returns the sanitized trace stripped of SGR escapes so the text
+// lands in the user's clipboard as plain readable log output. The job header
+// is omitted (pane chrome already shows it); callers can prepend their own
+// label if the clipboard target needs context.
+func (l *JobLogView) CopyBody() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	body := l.body
+	if body == "" {
+		return ""
+	}
+	header := strings.Index(body, "\n\n")
+	if header > 0 {
+		body = body[header+2:]
+	}
+
+	return stripSGR(body)
 }
 
 // CurrentJob returns the job currently displayed, or nil.
@@ -102,14 +143,23 @@ func (l *JobLogView) Render(pane *gocui.View) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	innerW, _ := pane.InnerSize()
 	pane.Clear()
 	pane.Wrap = false
+	if chrome := renderChromeLine(l.chromeTitle, l.chromeMeta, innerW); chrome != "" {
+		pane.WriteString(chrome + "\n\n")
+	}
 	if l.status != "" {
 		pane.WriteString(l.status + "\n")
+		pane.WriteString("\n" + renderKeybindStrip(keybindModePipelineLog) + "\n")
 
 		return
 	}
 	pane.WriteString(l.body)
+	if l.footer != "" {
+		pane.WriteString("\n\n" + l.footer)
+	}
+	pane.WriteString("\n\n" + renderKeybindStrip(keybindModePipelineLog) + "\n")
 }
 
 // ScrollBy shifts the pane origin by delta rows, clamped to content extent.
@@ -295,19 +345,16 @@ func consumeEscape(raw string, i int) int {
 	return i + 2
 }
 
-// renderJobLogHeader builds the bold header line shown above a trace —
-// mirrors Python JobLogView.show_log(): `<icon> stage/<name> (<duration>)`.
-func renderJobLogHeader(job *models.PipelineJob) string {
-	icon := pipelineJobStatusIcon(job.Status)
-	duration := formatJobDuration(job.Duration)
-	label := fmt.Sprintf("%s/%s", job.Stage, job.Name)
-
-	if duration == "" {
-		return fmt.Sprintf("%s %s%s%s", icon, ansiBold, label, ansiReset)
+// renderJobLogFooter builds the dim "(end of log · N lines · press y to
+// copy · Esc to close)" line shown beneath a trace per
+// design/project/wireframes/pipeline.js:57.
+func renderJobLogFooter(lineCount int) string {
+	noun := "lines"
+	if lineCount == 1 {
+		noun = "line"
 	}
 
-	return fmt.Sprintf("%s %s%s%s %s(%s)%s",
-		icon, ansiBold, label, ansiReset,
-		ansiDim, duration, ansiReset,
+	return fmt.Sprintf("%s(end of log · %d %s · press y to copy · Esc to close)%s",
+		theme.FgDim, lineCount, noun, theme.Reset,
 	)
 }

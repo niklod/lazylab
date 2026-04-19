@@ -10,6 +10,7 @@ import (
 
 	"github.com/niklod/lazylab/internal/models"
 	"github.com/niklod/lazylab/internal/tui/keymap"
+	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
 type JobLogSuite struct {
@@ -57,17 +58,28 @@ func (s *JobLogSuite) job() *models.PipelineJob {
 	}
 }
 
-func (s *JobLogSuite) TestSetJob_RendersHeaderAndBody() {
+func (s *JobLogSuite) TestSetJob_RendersBodyAndFooter() {
 	s.v.SetJob(s.job(), "line 1\nline 2\n")
 
 	s.v.Render(s.pane())
 
 	buf := s.pane().Buffer()
-	s.Require().Contains(buf, "test/test:unit")
-	s.Require().Contains(buf, "12s")
 	s.Require().Contains(buf, "line 1")
 	s.Require().Contains(buf, "line 2")
+	s.Require().Contains(buf, "end of log · 2 lines", "footer reflects trimmed body line count")
+	s.Require().Contains(buf, "press y to copy", "footer advertises copy hint")
+	s.Require().Contains(buf, "Esc to close", "footer advertises close hint")
+	s.Require().Contains(buf, "j/k", "keybind strip rendered below footer")
+	s.Require().NotContains(buf, "test/test:unit",
+		"job header lives on the pane chrome, not in the scrollable body")
 	s.Require().Equal(s.job(), s.v.CurrentJob())
+}
+
+func (s *JobLogSuite) TestRenderJobLogFooter_Singular() {
+	got := renderJobLogFooter(1)
+
+	s.Require().Contains(got, "1 line ")
+	s.Require().NotContains(got, "1 lines")
 }
 
 func (s *JobLogSuite) TestSetJob_EmptyTraceShowsPlaceholder() {
@@ -104,7 +116,7 @@ func (s *JobLogSuite) TestShowLoadingAndError() {
 	s.v.ShowError("boom")
 	s.v.Render(s.pane())
 	s.Require().Contains(s.pane().Buffer(), "boom")
-	s.Require().Contains(s.v.statusSnapshot(), ansiRed, "error status carries red ansi until render")
+	s.Require().Contains(s.v.statusSnapshot(), theme.FgErr, "error status carries err color until render")
 }
 
 func (s *JobLogSuite) TestScrollBy_ClampsToContent() {

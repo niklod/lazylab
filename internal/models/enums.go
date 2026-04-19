@@ -92,3 +92,15 @@ func (s PipelineStatus) IsTerminal() bool {
 
 	return false
 }
+
+// IsRetryable reports whether a CI job in this state can be retried via the
+// GitLab `/jobs/:id/retry` endpoint. Running/success/created jobs 409 if
+// asked to retry, so the UI suppresses the action in those states.
+func (s PipelineStatus) IsRetryable() bool {
+	switch s {
+	case PipelineStatusFailed, PipelineStatusCanceled, PipelineStatusSkipped:
+		return true
+	}
+
+	return false
+}

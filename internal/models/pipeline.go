@@ -3,13 +3,14 @@ package models
 import "time"
 
 type Pipeline struct {
-	ID        int            `json:"id"`
-	Status    PipelineStatus `json:"status"`
-	Ref       string         `json:"ref"`
-	SHA       string         `json:"sha"`
-	WebURL    string         `json:"web_url"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	ID          int            `json:"id"`
+	Status      PipelineStatus `json:"status"`
+	Ref         string         `json:"ref"`
+	SHA         string         `json:"sha"`
+	WebURL      string         `json:"web_url"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	TriggeredBy *User          `json:"triggered_by,omitempty"`
 }
 
 type PipelineJob struct {

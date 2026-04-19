@@ -165,6 +165,10 @@ func (v *Views) pipelineStagesBindings() []keymap.Binding {
 		{View: keymap.ViewDetailPipelineStages, Key: 'g', Handler: v.pipelineStagesMoveToStart},
 		{View: keymap.ViewDetailPipelineStages, Key: 'G', Handler: v.pipelineStagesMoveToEnd},
 		{View: keymap.ViewDetailPipelineStages, Key: gocui.KeyEnter, Handler: v.openJobLog},
+		{View: keymap.ViewDetailPipelineStages, Key: 'r', Handler: v.retryCurrentJob},
+		{View: keymap.ViewDetailPipelineStages, Key: 'R', Handler: v.forceRefreshPipeline},
+		{View: keymap.ViewDetailPipelineStages, Key: 'o', Handler: v.openCurrentJobInBrowser},
+		{View: keymap.ViewDetailPipelineStages, Key: 'a', Handler: v.toggleAutoRefresh},
 	}
 }
 
@@ -179,7 +183,65 @@ func (v *Views) pipelineJobLogBindings() []keymap.Binding {
 		{View: keymap.ViewDetailPipelineJobLog, Key: 'g', Handler: v.pipelineLogScrollToTop},
 		{View: keymap.ViewDetailPipelineJobLog, Key: 'G', Handler: v.pipelineLogScrollToBottom},
 		{View: keymap.ViewDetailPipelineJobLog, Key: gocui.KeyEsc, Handler: v.closeJobLog},
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'r', Handler: v.retryCurrentJob},
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'R', Handler: v.forceRefreshPipeline},
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'o', Handler: v.openCurrentJobInBrowser},
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'a', Handler: v.toggleAutoRefresh},
+		{View: keymap.ViewDetailPipelineJobLog, Key: 'y', Handler: v.copyLogBody},
 	}
+}
+
+//nolint:contextcheck // gocui handler signature is fixed; background ctx is intentional.
+func (v *Views) retryCurrentJob(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil {
+		return nil
+	}
+	if err := v.Detail.RetryCurrentJob(context.Background(), v.currentProject()); err != nil {
+		return fmt.Errorf("retry job: %w", err)
+	}
+
+	return nil
+}
+
+//nolint:contextcheck // gocui handler signature is fixed; background ctx is intentional.
+func (v *Views) forceRefreshPipeline(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil {
+		return nil
+	}
+	v.Detail.ForceRefreshPipeline(context.Background())
+
+	return nil
+}
+
+func (v *Views) openCurrentJobInBrowser(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil {
+		return nil
+	}
+	if err := v.Detail.OpenCurrentJobInBrowser(); err != nil {
+		return fmt.Errorf("open in browser: %w", err)
+	}
+
+	return nil
+}
+
+func (v *Views) toggleAutoRefresh(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil {
+		return nil
+	}
+	v.Detail.ToggleAutoRefresh()
+
+	return nil
+}
+
+func (v *Views) copyLogBody(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil {
+		return nil
+	}
+	if err := v.Detail.CopyLogBody(); err != nil {
+		return fmt.Errorf("copy log: %w", err)
+	}
+
+	return nil
 }
 
 func (v *Views) pipelineLogScrollToTop(g *gocui.Gui, _ *gocui.View) error {

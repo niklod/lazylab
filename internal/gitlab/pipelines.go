@@ -127,6 +127,28 @@ func (c *Client) GetJobTrace(ctx context.Context, projectID, jobID int) (string,
 	return doCached(ctx, c, jobTraceCacheNamespace, "get job trace", loader, projectID, jobID)
 }
 
+// RetryJob dispatches a retry for a failed/canceled CI job. GitLab returns
+// the updated job record; caller is responsible for invalidating the
+// mr_pipeline cache so the next fetch surfaces the new status. The retry
+// endpoint 409s on success/running jobs — models.PipelineStatus.IsRetryable
+// lets callers skip the RPC in that case.
+func (c *Client) RetryJob(ctx context.Context, projectID, jobID int) (*models.PipelineJob, error) {
+	if projectID <= 0 || jobID <= 0 {
+		return nil, fmt.Errorf("gitlab: retry job: project id and job id required")
+	}
+
+	updated, _, err := c.api.Jobs.RetryJob(projectID, int64(jobID), gogitlab.WithContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("gitlab: retry job %d!%d: %w", projectID, jobID, err)
+	}
+	if updated == nil {
+		return nil, fmt.Errorf("gitlab: retry job %d!%d: empty response", projectID, jobID)
+	}
+	j := toDomainJob(updated)
+
+	return &j, nil
+}
+
 func toDomainPipeline(p *gogitlab.Pipeline) models.Pipeline {
 	if p == nil {
 		return models.Pipeline{}
@@ -143,6 +165,10 @@ func toDomainPipeline(p *gogitlab.Pipeline) models.Pipeline {
 	}
 	if p.UpdatedAt != nil {
 		m.UpdatedAt = *p.UpdatedAt
+	}
+	if p.User != nil {
+		u := domainUserFromBasic(p.User)
+		m.TriggeredBy = &u
 	}
 
 	return m

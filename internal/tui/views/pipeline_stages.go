@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jesseduffield/gocui"
 
@@ -11,8 +12,12 @@ import (
 	"github.com/niklod/lazylab/internal/tui/theme"
 )
 
+// pipelineStagesNow is the clock used by the stages view when formatting the
+// "updated Ns ago" fragment of the overall summary line. Tests freeze it.
+var pipelineStagesNow = time.Now
+
 const (
-	pipelineStagesIndent      = "  "
+	pipelineStagesIndent      = "   "
 	pipelineStagesLoadingHint = "Loading pipeline…"
 	pipelineStagesEmptyHint   = "No pipeline for this merge request."
 	pipelineStagesNoJobsHint  = "Pipeline has no jobs."
@@ -46,11 +51,14 @@ type stageRow struct {
 // "configured once" flag would leave the remounted pane without the
 // green-on-black cursor row.
 type PipelineStagesView struct {
-	mu       sync.Mutex
-	rows     []stageRow
-	cursor   int
-	status   string
-	lastPane *gocui.View
+	mu          sync.Mutex
+	rows        []stageRow
+	detail      *models.PipelineDetail
+	cursor      int
+	status      string
+	chromeTitle string
+	chromeMeta  string
+	lastPane    *gocui.View
 }
 
 // NewPipelineStages constructs an empty view showing the loading hint
@@ -61,19 +69,29 @@ func NewPipelineStages() *PipelineStagesView {
 
 // SetDetail replaces the stages contents. Nil detail shows the empty
 // (no-pipeline) hint; a detail with no jobs shows the no-jobs hint.
+//
+// Cursor position survives refreshes: before replacing rows we remember the
+// job under the cursor (by ID) and, after the rebuild, seek to the same job
+// if it still exists. Without this the auto-refresh tick would yank the
+// cursor back to the first job every 5 seconds — deeply hostile while the
+// user is inspecting a late-stage job.
 func (p *PipelineStagesView) SetDetail(detail *models.PipelineDetail) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	prevJobID := p.selectedJobIDLocked()
+
 	if detail == nil {
 		p.rows = nil
+		p.detail = nil
 		p.cursor = 0
 		p.status = pipelineStagesEmptyHint
 
 		return
 	}
+	p.detail = detail
 	p.rows = buildStageRows(detail.Jobs)
-	p.cursor = firstJobRow(p.rows)
+	p.cursor = cursorForJobID(p.rows, prevJobID)
 	switch {
 	case len(detail.Jobs) == 0:
 		p.status = pipelineStagesNoJobsHint
@@ -82,12 +100,67 @@ func (p *PipelineStagesView) SetDetail(detail *models.PipelineDetail) {
 	}
 }
 
+// selectedJobIDLocked returns the ID of the job currently under the cursor,
+// or 0 if the cursor isn't on a job row. Caller holds p.mu.
+func (p *PipelineStagesView) selectedJobIDLocked() int {
+	if p.cursor < 0 || p.cursor >= len(p.rows) {
+		return 0
+	}
+	if job := p.rows[p.cursor].job; job != nil {
+		return job.ID
+	}
+
+	return 0
+}
+
+// cursorForJobID finds the row index of the job whose ID matches prev, or
+// falls back to the first job row when the job is no longer present (MR
+// pushed a new pipeline, job was filtered out, etc.).
+func cursorForJobID(rows []stageRow, prev int) int {
+	if prev == 0 {
+		return firstJobRow(rows)
+	}
+	for i, r := range rows {
+		if r.job != nil && r.job.ID == prev {
+			return i
+		}
+	}
+
+	return firstJobRow(rows)
+}
+
+// SetChrome updates the title / meta pair drawn on the first line of the
+// pane. Called by DetailView before each render so the right-hand "updated
+// Ns ago" fragment stays current. Empty strings disable the chrome.
+func (p *PipelineStagesView) SetChrome(title, meta string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.chromeTitle = title
+	p.chromeMeta = meta
+}
+
+// SetTransientStatus surfaces an ephemeral message (e.g. "copied 1234 chars",
+// "retrying e2e-smoke…") via the existing status slot. Cleared on the next
+// SetDetail so the message lifetime is naturally bounded by the refresh
+// cycle.
+func (p *PipelineStagesView) SetTransientStatus(msg string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if msg == "" {
+		return
+	}
+	p.status = theme.FgDim + msg + theme.Reset
+}
+
 // ShowLoading resets the pane to the dim-loading hint.
 func (p *PipelineStagesView) ShowLoading() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.rows = nil
+	p.detail = nil
 	p.cursor = 0
 	p.status = pipelineStagesLoadingHint
 }
@@ -98,8 +171,9 @@ func (p *PipelineStagesView) ShowError(msg string) {
 	defer p.mu.Unlock()
 
 	p.rows = nil
+	p.detail = nil
 	p.cursor = 0
-	p.status = ansiRed + msg + ansiReset
+	p.status = theme.FgErr + msg + theme.Reset
 }
 
 // SelectedJob returns the job under the cursor, or nil if the cursor is
@@ -198,21 +272,106 @@ func (p *PipelineStagesView) Render(pane *gocui.View) {
 	if p.lastPane != pane {
 		pane.Highlight = true
 		pane.SelBgColor = theme.ColorAccent
-		pane.SelFgColor = gocui.ColorBlack
+		pane.SelFgColor = theme.ColorSelectionFg
 		p.lastPane = pane
 	}
 
+	innerW, _ := pane.InnerSize()
 	pane.Clear()
+
+	chromeOffset := 0
+	if chrome := renderChromeLine(p.chromeTitle, p.chromeMeta, innerW); chrome != "" {
+		pane.WriteString(chrome + "\n\n")
+		chromeOffset = 2
+	}
 	if p.status != "" {
 		pane.WriteString(p.status + "\n")
-		placeCursor(pane, 0, 1)
+		pane.WriteString("\n" + renderKeybindStrip(keybindModePipelineStages) + "\n")
+		placeCursor(pane, chromeOffset, chromeOffset+3)
 
 		return
 	}
 	for _, row := range p.rows {
 		pane.WriteString(row.text + "\n")
 	}
-	placeCursor(pane, p.cursor, len(p.rows))
+
+	footer := p.renderFooterLocked(innerW)
+	pane.WriteString(footer)
+	// Content rows start at `chromeOffset`; the footer adds 5 visible lines
+	// (blank, separator, overall, blank, keybind strip) plus the trailing
+	// newline. Total lines must account for all three regions so placeCursor
+	// can scroll correctly when the pane is short.
+	const footerLines = 5
+	totalLines := chromeOffset + len(p.rows) + footerLines
+	placeCursor(pane, p.cursor+chromeOffset, totalLines)
+}
+
+// renderFooterLocked returns the pane's trailing decoration — blank line,
+// separator, overall summary, blank line, keybind strip. Caller holds p.mu.
+func (p *PipelineStagesView) renderFooterLocked(innerW int) string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(renderPipelineSeparator(innerW) + "\n")
+	if p.detail != nil {
+		sb.WriteString(renderOverallLine(p.detail.Pipeline, p.detail.Pipeline.TriggeredBy, pipelineStagesNow()) + "\n")
+	}
+	sb.WriteString("\n")
+	sb.WriteString(renderKeybindStrip(keybindModePipelineStages) + "\n")
+
+	return sb.String()
+}
+
+// renderPipelineSeparator emits a dim dashed line matching the wireframe's
+// summary divider. Width follows the pane's inner width (minus a single
+// leading space to mirror the indent of the overall line), clamped to a
+// sensible minimum so a resize to near-zero doesn't produce garbage.
+func renderPipelineSeparator(innerW int) string {
+	width := innerW - 1
+	if width < 20 {
+		width = 20
+	}
+	if width > 200 {
+		width = 200
+	}
+
+	return " " + theme.FgDim + strings.Repeat("\u2500", width) + theme.Reset
+}
+
+// renderOverallLine paints the dim "Overall <status> · [triggered by @user]
+// · commit <sha7> · <age>" line per the pipeline wireframe. Missing SHA or
+// triggered-by fragments are skipped; callers pass nil/zero values safely.
+func renderOverallLine(p models.Pipeline, triggeredBy *models.User, now time.Time) string {
+	var sb strings.Builder
+	sb.WriteByte(' ')
+	sb.WriteString(theme.FgDim + "Overall " + theme.Reset)
+
+	color := pipelineStatusColor(p.Status)
+	label := pipelineStatusLabel(p.Status)
+	sb.WriteString(theme.Dot(color) + " " + color + label + theme.Reset)
+
+	if triggeredBy != nil && triggeredBy.Username != "" {
+		sb.WriteString(theme.FgDim + " · triggered by " + theme.Reset)
+		sb.WriteString(theme.FgAccent + "@" + triggeredBy.Username + theme.Reset)
+	}
+
+	if sha := shortSHA(p.SHA); sha != "" {
+		sb.WriteString(theme.FgDim + " · commit " + theme.Reset)
+		sb.WriteString(theme.FgAccent + sha + theme.Reset)
+	}
+
+	if age := theme.Relative(p.CreatedAt, now); age != "" {
+		sb.WriteString(theme.FgDim + " · " + age + theme.Reset)
+	}
+
+	return sb.String()
+}
+
+func shortSHA(sha string) string {
+	if len(sha) < 7 {
+		return sha
+	}
+
+	return sha[:7]
 }
 
 // buildStageRows groups jobs by stage in API order (first-seen wins),
@@ -230,7 +389,7 @@ func buildStageRows(jobs []models.PipelineJob) []stageRow {
 		if _, seen := printed[j.Stage]; !seen {
 			printed[j.Stage] = struct{}{}
 			rows = append(rows, stageRow{
-				text: fmt.Sprintf("%s%s%s", ansiBold, j.Stage, ansiReset),
+				text: fmt.Sprintf(" %s%s%s", theme.Bold, j.Stage, theme.Reset),
 			})
 		}
 		rows = append(rows, stageRow{
@@ -249,7 +408,7 @@ func renderJobLine(j *models.PipelineJob) string {
 		return fmt.Sprintf("%s %s", icon, j.Name)
 	}
 
-	return fmt.Sprintf("%s %s %s%s%s", icon, j.Name, ansiDim, duration, ansiReset)
+	return fmt.Sprintf("%s %s %s%s%s", icon, j.Name, theme.FgDim, duration, theme.Reset)
 }
 
 // formatJobDuration mirrors Python _format_duration: nil → "", <60s → "Xs",
@@ -271,33 +430,32 @@ func formatJobDuration(d *float64) string {
 	return fmt.Sprintf("%dm %ds", minutes, secs)
 }
 
-// pipelineJobStatusIcon maps a PipelineStatus to a coloured ANSI glyph.
-// Unknown statuses fall through to a dim label so the pane does not render
-// a blank column for a newly-introduced upstream state.
+// pipelineJobStatusIcon maps a PipelineStatus to a coloured ANSI glyph per
+// design/project/wireframes/pipeline.js:67. Colour is the second layer of
+// information atop the glyph; both must match the design palette.
 func pipelineJobStatusIcon(status models.PipelineStatus) string {
 	switch status {
 	case models.PipelineStatusSuccess:
-		return ansiGreen + "\u2713" + ansiReset // ✓
+		return theme.FgOK + "\u2713" + theme.Reset // ✓
 	case models.PipelineStatusFailed:
-		return ansiRed + "\u2717" + ansiReset // ✗
+		return theme.FgErr + "\u2717" + theme.Reset // ✗
 	case models.PipelineStatusRunning:
-		return ansiYellow + "\u25B6" + ansiReset // ▶
+		return theme.FgOK + "\u25CF" + theme.Reset // ●
 	case models.PipelineStatusPending,
 		models.PipelineStatusWaitingForResource,
-		models.PipelineStatusPreparing:
-		return ansiYellow + "\u25EF" + ansiReset // ◯
-	case models.PipelineStatusCreated:
-		return ansiDim + "\u25EF" + ansiReset
-	case models.PipelineStatusCanceled:
-		return ansiDim + "\u2717" + ansiReset
+		models.PipelineStatusPreparing,
+		models.PipelineStatusCreated:
+		return theme.FgDim + "\u25CB" + theme.Reset // ○
 	case models.PipelineStatusSkipped:
-		return ansiDim + "\u2298" + ansiReset // ⊘
+		return theme.FgWarn + "\u2298" + theme.Reset // ⊘
 	case models.PipelineStatusManual:
-		return ansiCyan + "\u25B6" + ansiReset
+		return theme.FgDim + "\u25B6" + theme.Reset // ▶
+	case models.PipelineStatusCanceled:
+		return theme.FgErr + "\u2298" + theme.Reset // ⊘ (err-coloured; `✗` would collide with failed)
 	case models.PipelineStatusScheduled:
-		return ansiCyan + "\u23F2" + ansiReset // ⏲
+		return theme.FgDim + "\u25B6" + theme.Reset // ▶
 	default:
-		return ansiDim + strings.ToLower(string(status)) + ansiReset
+		return theme.FgDim + strings.ToLower(string(status)) + theme.Reset
 	}
 }
 

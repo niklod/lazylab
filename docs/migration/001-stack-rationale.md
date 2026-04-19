@@ -68,7 +68,8 @@ Source-of-truth for package choices in the Go rewrite. Compressed summary in `~/
 
 | Package | Why |
 |---------|-----|
-| `atotto/clipboard` | Cross-platform clipboard for MR URL / commit SHA copy. |
+| `atotto/clipboard` | Cross-platform clipboard for `y copy log body`, MR URL / commit SHA copy. Fronted by `internal/pkg/clipboard` (ADR 018). |
+| `pkg/browser` | Cross-platform "open URL in default browser" for the `o` keybind on the Pipeline tab. Fronted by `internal/pkg/browser` with a swappable hook for tests (ADR 018). |
 | `dario.cat/mergo` | Deep-merge user config over defaults. |
 | `go-errors/errors` | Errors with stack traces for log context. |
 

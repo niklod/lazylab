@@ -215,9 +215,12 @@ func (s *MRPipelineSuite) TestPipelineTab_EnterOpensJobLogAndEscCloses() {
 	s.Require().True(s.v.Detail.LogOpen())
 
 	logBuf := s.buffer(keymap.ViewDetailPipelineJobLog)
-	s.Require().Contains(logBuf, "test/test:unit")
+	s.Require().Contains(logBuf, "Log · ", "pane chrome shows Log title")
+	s.Require().Contains(logBuf, "test:unit", "job name in chrome")
+	s.Require().Contains(logBuf, "stage test", "meta line shows stage")
 	s.Require().Contains(logBuf, "step 1 ok")
 	s.Require().Contains(logBuf, "step 2 FAILED")
+	s.Require().Contains(logBuf, "end of log", "footer rendered below body")
 
 	// Stages pane must be unmounted while log is open.
 	_, err = s.g.View(keymap.ViewDetailPipelineStages)

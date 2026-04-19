@@ -73,6 +73,16 @@ func (c *Client) API() *gogitlab.Client {
 	return c.api
 }
 
+// InvalidateMR drops every cached entry for the given MR so the next fetch
+// hits upstream. Safe when the client was built without WithCache — the no-op
+// branch keeps callers from having to know the cache exists.
+func (c *Client) InvalidateMR(projectID, mrIID int) {
+	if c.cache == nil {
+		return
+	}
+	c.cache.InvalidateMR(projectID, mrIID)
+}
+
 // doCached wraps the `if c.cache == nil { pass-through } else { cache.Do }`
 // boilerplate every read method needs. The `label` is the human-readable op
 // name used in the wrapped cache error — e.g. "list merge requests" produces

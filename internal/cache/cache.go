@@ -106,6 +106,7 @@ func (c *Cache) InvalidateMR(projectID, mrIID int) {
 		MakeKey("mr_approvals", projectID, mrIID),
 		MakeKey("mr_discussions", projectID, mrIID),
 		MakeKey("mr_changes", projectID, mrIID),
+		MakeKey("mr_pipeline", projectID, mrIID),
 		MakeKey("pipeline_latest", projectID, mrIID),
 		MakeKey("pipeline_detail", projectID, mrIID),
 	}

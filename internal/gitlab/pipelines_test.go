@@ -21,7 +21,7 @@ import (
 
 const (
 	pipelinesFixture = `[{"id":77,"iid":1,"project_id":11,"status":"running","ref":"feat/x","web_url":"u","updated_at":"2026-04-10T12:00:00Z"}]`
-	pipelineFixture  = `{"id":77,"status":"running","ref":"feat/x","sha":"deadbeef","web_url":"u","updated_at":"2026-04-10T12:00:00Z","created_at":"2026-04-10T11:00:00Z"}`
+	pipelineFixture  = `{"id":77,"status":"running","ref":"feat/x","sha":"deadbeef","web_url":"u","updated_at":"2026-04-10T12:00:00Z","created_at":"2026-04-10T11:00:00Z","user":{"id":42,"username":"mira.k","name":"Mira K"}}`
 
 	pipelineJobsPage1 = `[
 		{"id":1,"name":"build","stage":"build","status":"success","web_url":"u1","duration":12.5,"allow_failure":false},
@@ -85,6 +85,9 @@ func (s *PipelinesSuite) TestGetMRPipelineDetail_MapsPipelineAndPaginatedJobs() 
 	s.Require().NotNil(detail.Jobs[2].Duration)
 	s.Require().InDelta(12.5, *detail.Jobs[2].Duration, 0.01)
 	s.Require().Nil(detail.Jobs[0].Duration, "zero duration maps to nil")
+	s.Require().NotNil(detail.Pipeline.TriggeredBy, "triggered_by must propagate from upstream user")
+	s.Require().Equal("mira.k", detail.Pipeline.TriggeredBy.Username)
+	s.Require().Equal("Mira K", detail.Pipeline.TriggeredBy.Name)
 }
 
 func (s *PipelinesSuite) TestGetMRPipelineDetail_ReversesAPIOrderToPipelineExecOrder() {

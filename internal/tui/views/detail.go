@@ -11,6 +11,7 @@ import (
 
 	"github.com/niklod/lazylab/internal/appcontext"
 	"github.com/niklod/lazylab/internal/models"
+	"github.com/niklod/lazylab/internal/pkg/clipboard"
 	"github.com/niklod/lazylab/internal/tui/keymap"
 	"github.com/niklod/lazylab/internal/tui/theme"
 )
@@ -110,6 +111,11 @@ type DetailView struct {
 	logSeq     uint64
 	logLoading bool
 	logErr     error
+
+	pipelineRefresh    pipelineRefreshState
+	pipelineRefreshCtl *pipelineRefreshCtl
+
+	clip clipboard.Clipboard
 }
 
 func NewDetail(g *gocui.Gui, app *appcontext.AppContext) *DetailView {
@@ -121,7 +127,21 @@ func NewDetail(g *gocui.Gui, app *appcontext.AppContext) *DetailView {
 		pipelineStages: NewPipelineStages(),
 		jobLog:         NewJobLog(),
 		tabBar:         renderTabBar(DetailTabOverview),
+		pipelineRefresh: pipelineRefreshState{
+			enabled:  true,
+			interval: 5 * time.Second,
+		},
+		clip: clipboard.System(),
 	}
+}
+
+// SetClipboard overrides the clipboard backend. Used by e2e tests to plug a
+// capture-only fake without touching the real OS clipboard.
+func (d *DetailView) SetClipboard(c clipboard.Clipboard) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.clip = c
 }
 
 // ConsumePendingFocus returns and clears the view name a recent tab change
@@ -295,6 +315,12 @@ func (d *DetailView) SetTab(tab DetailTab, project *models.Project) {
 	}
 	if tab == DetailTabPipeline && prev != DetailTabPipeline && mr != nil {
 		d.fetchPipelineAsync(context.Background(), project, mr)
+		d.startPipelineRefresh(project, mr)
+	}
+	if prev == DetailTabPipeline && tab != DetailTabPipeline {
+		d.mu.Lock()
+		d.stopPipelineRefreshLocked()
+		d.mu.Unlock()
 	}
 }
 
@@ -375,6 +401,10 @@ func (d *DetailView) Render(pane *gocui.View) {
 	pane.Clear()
 	pane.WriteString(d.tabBar + "\n")
 
+	if d.currentTab == DetailTabPipeline {
+		d.applyPipelineChromeLocked(time.Now())
+	}
+
 	if d.mr == nil && d.currentTab != DetailTabOverview {
 		pane.WriteString(detailStatusEmpty + "\n")
 
@@ -393,6 +423,36 @@ func (d *DetailView) Render(pane *gocui.View) {
 	case DetailTabConversation:
 		pane.WriteString(detailConversationStub + "\n")
 	case DetailTabPipeline:
+	}
+}
+
+// applyPipelineChromeLocked pushes the stages and log panes' title/meta pair
+// based on the current pipeline state. Caller holds d.mu. Called on every
+// tick so "updated Ns ago" stays current.
+func (d *DetailView) applyPipelineChromeLocked(now time.Time) {
+	iid := 0
+	if d.mr != nil {
+		iid = d.mr.IID
+	}
+
+	if d.pipelineStages != nil {
+		var title, meta string
+		if iid > 0 {
+			title = fmt.Sprintf("Detail · !%d", iid)
+		}
+		if d.pipelineDetail != nil {
+			meta = pipelineStagesMeta(d.pipelineDetail.Pipeline, d.pipelineRefresh, now)
+		}
+		d.pipelineStages.SetChrome(title, meta)
+	}
+
+	if d.jobLog != nil {
+		var title, meta string
+		if d.logJob != nil {
+			title = fmt.Sprintf("Log · %s %s", pipelineJobStatusIcon(d.logJob.Status), d.logJob.Name)
+			meta = jobLogMeta(d.logJob, d.pipelineRefresh, now)
+		}
+		d.jobLog.SetChrome(title, meta)
 	}
 }
 
@@ -416,6 +476,7 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 		d.diffContent.SetFile(nil)
 	}
 
+	d.stopPipelineRefreshLocked()
 	d.pipelineSeq++
 	d.pipelineDetail = nil
 	d.pipelineLoading = false
