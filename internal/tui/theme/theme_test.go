@@ -41,6 +41,7 @@ func TestPalette_UniqueColors(t *testing.T) {
 		"accent": FgAccent,
 		"merged": FgMerged,
 		"draft":  FgDraft,
+		"dim":    FgDim,
 	}
 
 	seen := make(map[string]string, len(palette))

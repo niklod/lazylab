@@ -173,11 +173,15 @@ func (s *MRsRenderSuite) TestOpenedMRs_RenderAfterProjectSelection() {
 	s.loadProjectAndMRs()
 
 	buf := s.mrsBuffer()
-	s.Require().Contains(buf, "[state=opened owner=all]")
-	s.Require().Contains(buf, "!1 O alice")
+	s.Require().Contains(buf, "[2] Merge Requests")
+	s.Require().Contains(buf, "state:opened")
+	s.Require().Contains(buf, "owner:all")
+	s.Require().Contains(buf, "!1")
 	s.Require().Contains(buf, "Feature Alpha")
-	s.Require().Contains(buf, "!2 O bob")
+	s.Require().Contains(buf, "@alice")
+	s.Require().Contains(buf, "!2")
 	s.Require().Contains(buf, "Bugfix Beta")
+	s.Require().Contains(buf, "@bob")
 }
 
 func (s *MRsRenderSuite) TestCycleStateFilter_ChangesTableContents() {
@@ -193,8 +197,9 @@ func (s *MRsRenderSuite) TestCycleStateFilter_ChangesTableContents() {
 
 	s.Require().Equal("merged", string(s.v.MRs.StateFilter()))
 	buf := s.mrsBuffer()
-	s.Require().Contains(buf, "[state=merged")
-	s.Require().Contains(buf, "!3 M alice")
+	s.Require().Contains(buf, "state:merged")
+	s.Require().Contains(buf, "!3")
+	s.Require().Contains(buf, "@alice")
 	s.Require().Contains(buf, "Merged Gamma")
 	s.Require().NotContains(buf, "Feature Alpha", "opened MRs no longer rendered after cycling to merged")
 	s.Require().Greater(s.mrCalls.Load(), before, "cycling state triggers an MR refetch")

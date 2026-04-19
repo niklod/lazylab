@@ -17,9 +17,9 @@ import (
 )
 
 const (
+	mrsPaneTitle       = "[2] Merge Requests"
 	mrsStatusNoProject = "Select a project to view merge requests."
 	mrsStatusLoading   = "Loading merge requests…"
-	mrsStatusEmpty     = "No merge requests match."
 )
 
 // MRsView renders the Merge Requests pane. Fed by repos-pane project
@@ -41,8 +41,12 @@ type MRsView struct {
 	loadErr      error
 	stateFilter  models.MRStateFilter
 	ownerFilter  models.MROwnerFilter
-	bannerLine   string
 	loadSeq      uint64
+	// cancelLoad aborts the in-flight fetch when a newer SetProject
+	// supersedes it. Without this, rapid filter cycling (s/o) piles up
+	// goroutines that loadSeq discards the results of but can't stop from
+	// running to completion against the GitLab API.
+	cancelLoad context.CancelFunc
 }
 
 // NewMRs constructs an MRsView bound to g and app. The initial state/owner
@@ -63,7 +67,6 @@ func NewMRs(g *gocui.Gui, app *appcontext.AppContext) *MRsView {
 		stateFilter: state,
 		ownerFilter: owner,
 	}
-	v.bannerLine = renderBannerLine(state, owner)
 
 	return v
 }
@@ -75,10 +78,10 @@ func (v *MRsView) SetProject(ctx context.Context, p *models.Project) {
 	if p == nil {
 		return
 	}
-	seq, state, owner := v.beginLoad(p)
+	fetchCtx, seq, state, owner := v.beginLoad(ctx, p)
 
 	go func() {
-		mrs, err := v.fetchMRs(ctx, p, state, owner)
+		mrs, err := v.fetchMRs(fetchCtx, p, state, owner)
 		v.g.Update(func(_ *gocui.Gui) error {
 			v.apply(seq, mrs, err)
 
@@ -94,22 +97,31 @@ func (v *MRsView) SetProjectSync(ctx context.Context, p *models.Project) error {
 	if p == nil {
 		return nil
 	}
-	seq, state, owner := v.beginLoad(p)
+	fetchCtx, seq, state, owner := v.beginLoad(ctx, p)
 
-	mrs, err := v.fetchMRs(ctx, p, state, owner)
+	mrs, err := v.fetchMRs(fetchCtx, p, state, owner)
 	v.apply(seq, mrs, err)
 
 	return err
 }
 
 // beginLoad commits the start of a fetch under the mutex and returns the
-// snapshot that the fetch goroutine will operate on. Taking the filter values
-// out of the goroutine is a hard race-safety requirement — the cycle handlers
-// mutate v.stateFilter/v.ownerFilter on the main loop thread, so reading them
-// from a background goroutine would race.
-func (v *MRsView) beginLoad(p *models.Project) (seq uint64, state models.MRStateFilter, owner models.MROwnerFilter) {
+// snapshot that the fetch goroutine will operate on plus a cancellable child
+// context. Taking the filter values out of the goroutine is a hard race-
+// safety requirement — the cycle handlers mutate v.stateFilter/v.ownerFilter
+// on the main loop thread, so reading them from a background goroutine would
+// race. The previous fetch's cancel is invoked so rapid key presses (s/o)
+// abort in-flight HTTP calls instead of leaking goroutines.
+func (v *MRsView) beginLoad(
+	parent context.Context,
+	p *models.Project,
+) (ctx context.Context, seq uint64, state models.MRStateFilter, owner models.MROwnerFilter) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.cancelLoad != nil {
+		v.cancelLoad()
+	}
+	ctx, v.cancelLoad = context.WithCancel(parent)
 	v.current = p
 	v.loading = true
 	v.loadErr = nil
@@ -119,7 +131,7 @@ func (v *MRsView) beginLoad(p *models.Project) (seq uint64, state models.MRState
 	v.cursor = 0
 	v.loadSeq++
 
-	return v.loadSeq, v.stateFilter, v.ownerFilter
+	return ctx, v.loadSeq, v.stateFilter, v.ownerFilter
 }
 
 func (v *MRsView) fetchMRs(
@@ -239,42 +251,83 @@ func (v *MRsView) Render(pane *gocui.View) {
 	pane.Clear()
 	pane.Highlight = true
 	pane.SelBgColor = theme.ColorAccent
-	pane.SelFgColor = gocui.ColorBlack
+	pane.SelFgColor = theme.ColorSelectionFg
 
 	switch {
 	case v.current == nil:
-		pane.WriteString(mrsStatusNoProject + "\n")
+		pane.WriteString(mrsPaneTitle + "\n\n" + dim(" "+mrsStatusNoProject) + "\n")
 
 		return
 	case v.loading:
-		pane.WriteString(mrsStatusLoading + "\n")
+		pane.WriteString(mrsPaneTitle + "\n\n" + dim(" "+mrsStatusLoading) + "\n")
 
 		return
 	case v.loadErr != nil:
-		pane.WriteString(fmt.Sprintf("Error loading merge requests: %v\n", v.loadErr))
+		pane.WriteString(mrsPaneTitle + "\n\n" +
+			theme.Wrap(theme.FgErr, fmt.Sprintf(" ✕ Error loading merge requests: %v", v.loadErr)) + "\n")
 
 		return
 	case len(v.filtered) == 0:
-		pane.WriteString(v.bannerLine)
-		pane.WriteString(mrsStatusEmpty + "\n")
+		pane.WriteString(mrsHeader(0, len(v.all), v.stateFilter, v.ownerFilter))
+		writeMRsEmptyState(pane, v.stateFilter, v.ownerFilter)
 
 		return
 	}
 
-	pane.WriteString(v.bannerLine)
-	var sb strings.Builder
-	sb.Grow(len(v.filtered) * 48)
-	for _, mr := range v.filtered {
-		fmt.Fprintf(&sb, "!%d %s %s  %s\n",
-			mr.IID, mrStateLetter(mr.State), mr.Author.Username, mr.Title,
-		)
-	}
-	pane.WriteString(sb.String())
+	pane.WriteString(mrsHeader(len(v.filtered), len(v.all), v.stateFilter, v.ownerFilter))
 
-	// Offset cursor by one to account for the banner line so vim nav lands on data rows.
+	innerW, _ := pane.InnerSize()
+	for _, mr := range v.filtered {
+		glyph, color := mrStateGlyph(mr.State, mr.IsDraft())
+		icon := theme.Wrap(color, glyph)
+		// All state glyphs are single-cell per _helpers.js / layout.js.
+		pane.WriteString(formatMRRow(icon, mr.IID, mr.Title, mr.Author.Username, innerW) + "\n")
+	}
+
 	if v.cursor >= 0 && v.cursor < len(v.filtered) {
 		placeCursor(pane, v.cursor+1, len(v.filtered)+1)
 	}
+}
+
+// mrsHeader builds the dim "[2] Merge Requests · state:X · owner:Y · N/M"
+// row that prefixes every populated render. Computed per render — at typical
+// list sizes the cost is below the noise floor of the gocui paint, and the
+// alternative (caching it on the view) requires careful invalidation across
+// every mutator.
+func mrsHeader(filtered, total int, state models.MRStateFilter, owner models.MROwnerFilter) string {
+	meta := fmt.Sprintf(" · state:%s · owner:%s · %d/%d", state, owner, filtered, total)
+
+	return mrsPaneTitle + dim(meta) + "\n"
+}
+
+// writeMRsEmptyState renders the dim "no MRs match …" hint with the live
+// filter values and the keys that change them, mirroring states.js.
+func writeMRsEmptyState(pane *gocui.View, state models.MRStateFilter, owner models.MROwnerFilter) {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(dim(fmt.Sprintf(" No MRs match state:%s owner:%s", state, owner)) + "\n\n")
+	sb.WriteString(dim(" Press ") + accent("S") + dim(" or ") + accent("O") + dim(" to change filters,") + "\n")
+	sb.WriteString(dim(" or ") + accent("R") + dim(" to refresh.") + "\n")
+	pane.WriteString(sb.String())
+}
+
+// mrStateGlyph maps an MR state plus draft flag to a coloured glyph per the
+// design palette. Draft overrides the underlying state — a draft of any
+// state still renders as the half-circle in the draft tone.
+func mrStateGlyph(state models.MRState, draft bool) (glyph, color string) {
+	if draft {
+		return "◐", theme.FgDraft
+	}
+	switch state {
+	case models.MRStateOpened:
+		return "●", theme.FgOK
+	case models.MRStateMerged:
+		return "✓", theme.FgMerged
+	case models.MRStateClosed:
+		return "✕", theme.FgErr
+	}
+
+	return "?", theme.FgDraft
 }
 
 // Bindings returns the per-view keybindings owned by the mrs pane and its
@@ -335,7 +388,6 @@ func (v *MRsView) handleBottom(_ *gocui.Gui, _ *gocui.View) error {
 func (v *MRsView) handleCycleState(_ *gocui.Gui, _ *gocui.View) error {
 	v.mu.Lock()
 	v.stateFilter = nextStateFilter(v.stateFilter)
-	v.bannerLine = renderBannerLine(v.stateFilter, v.ownerFilter)
 	p := v.current
 	v.mu.Unlock()
 
@@ -349,7 +401,6 @@ func (v *MRsView) handleCycleState(_ *gocui.Gui, _ *gocui.View) error {
 func (v *MRsView) handleCycleOwner(_ *gocui.Gui, _ *gocui.View) error {
 	v.mu.Lock()
 	v.ownerFilter = nextOwnerFilter(v.ownerFilter)
-	v.bannerLine = renderBannerLine(v.stateFilter, v.ownerFilter)
 	p := v.current
 	v.mu.Unlock()
 
@@ -449,27 +500,6 @@ func refocusMRs(g *gocui.Gui) error {
 	}
 
 	return nil
-}
-
-// renderBannerLine builds the filter-status line shown at the top of the
-// mrs pane. Called only when the filters change (constructor + cycle
-// handlers); the result is cached in MRsView.bannerLine so Render doesn't
-// allocate a fresh string on every layout tick.
-func renderBannerLine(state models.MRStateFilter, owner models.MROwnerFilter) string {
-	return fmt.Sprintf("[state=%s owner=%s]\n", state, owner)
-}
-
-func mrStateLetter(s models.MRState) string {
-	switch s {
-	case models.MRStateOpened:
-		return "O"
-	case models.MRStateMerged:
-		return "M"
-	case models.MRStateClosed:
-		return "C"
-	}
-
-	return "?"
 }
 
 func nextStateFilter(f models.MRStateFilter) models.MRStateFilter {

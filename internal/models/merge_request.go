@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type MergeRequest struct {
 	ID             int        `json:"id"`
@@ -25,3 +28,16 @@ type MergeRequest struct {
 func (m MergeRequest) IsMerged() bool { return m.State.IsMerged() }
 func (m MergeRequest) IsOpen() bool   { return m.State.IsOpen() }
 func (m MergeRequest) IsClosed() bool { return m.State.IsClosed() }
+
+// IsDraft reports whether the MR is a draft / work-in-progress, derived from
+// the title prefix because GitLab exposes drafts via title convention. Match
+// is case-insensitive and trims leading whitespace so cached titles with
+// leading spaces still classify correctly.
+func (m MergeRequest) IsDraft() bool {
+	t := strings.ToLower(strings.TrimLeft(m.Title, " \t"))
+
+	return strings.HasPrefix(t, "draft:") ||
+		strings.HasPrefix(t, "[draft]") ||
+		strings.HasPrefix(t, "[wip]") ||
+		strings.HasPrefix(t, "wip:")
+}

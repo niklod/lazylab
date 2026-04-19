@@ -123,7 +123,7 @@ func (s *ReposRenderSuite) TestProjects_RenderInReposPane() {
 	s.Require().Contains(buf, "grp/alpha")
 	s.Require().Contains(buf, "grp/bravo")
 	s.Require().Contains(buf, "team/charlie")
-	s.Require().Contains(buf, "☆ grp/alpha", "unfavourited rows carry the hollow icon")
+	s.Require().NotContains(buf, "☆", "unfavourited rows render no icon (design has none)")
 }
 
 func (s *ReposRenderSuite) TestSearch_EscOnReposPaneClearsSubmittedFilter() {
@@ -186,8 +186,12 @@ func (s *ReposRenderSuite) TestToggleFavourite_PersistsToConfigYAML() {
 
 	s.Require().NoError(s.layoutTick())
 	buf := s.reposBuffer()
-	firstLine := strings.SplitN(strings.TrimSpace(buf), "\n", 2)[0]
-	s.Require().Contains(firstLine, "★ grp/bravo", "favourite bubbled to top and has filled icon")
+	// Header line is row 0; favourites bubble to row 1.
+	lines := strings.SplitN(strings.TrimSpace(buf), "\n", 3)
+	s.Require().GreaterOrEqual(len(lines), 2, "expected header + at least one row")
+	favRow := lines[1]
+	s.Require().Contains(favRow, "★", "favourite icon present")
+	s.Require().Contains(favRow, "grp/bravo", "favourite bubbled to top")
 }
 
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; running suites in parallel races.

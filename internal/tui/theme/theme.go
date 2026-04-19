@@ -38,13 +38,15 @@ var (
 	FgAccent = rgbFg(217, 119, 87)  // #d97757 — mentions, active tab, keybinds
 	FgMerged = rgbFg(138, 92, 200)  // #8a5cc8 — merged state
 	FgDraft  = rgbFg(138, 133, 123) // #8a857b — draft/WIP, canceled, skipped
+	FgDim    = rgbFg(122, 121, 112) // #7a7970 — paths, timestamps, meta keys
 )
 
-// Attribute mirrors of the accent color for tcell-side use (panel frames,
-// selection background/foreground). Additional attributes can be added here
-// as the UI grows.
+// Attribute mirrors for tcell-side use (panel frames, selection background/
+// foreground). Distinct from the SGR Fg* constants above — these go directly
+// to tcell, not through escape parsing.
 var (
-	ColorAccent = gocui.NewRGBColor(217, 119, 87)
+	ColorAccent      = gocui.NewRGBColor(217, 119, 87)
+	ColorSelectionFg = gocui.NewRGBColor(255, 255, 255)
 )
 
 // Wrap returns text wrapped in color...Reset. Cheap helper that beats

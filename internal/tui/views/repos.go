@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	goerrors "github.com/go-errors/errors"
 	"github.com/jesseduffield/gocui"
@@ -25,10 +26,10 @@ import (
 )
 
 const (
-	iconFavorited   = "★"
-	iconUnfavorited = "☆"
-	statusLoading   = "Loading projects…"
-	statusEmpty     = "No projects match."
+	iconFavorited     = "★"
+	iconNoFav         = "  " // two spaces keep the path column aligned with favs
+	reposPaneTitle    = "[1] Repositories"
+	reposLoadingTitle = "Loading projects…"
 )
 
 // ReposView renders the project list pane: favourite indicator + path,
@@ -157,34 +158,73 @@ func (v *ReposView) Render(pane *gocui.View) {
 	pane.Clear()
 	pane.Highlight = true
 	pane.SelBgColor = theme.ColorAccent
-	pane.SelFgColor = gocui.ColorBlack
+	pane.SelFgColor = theme.ColorSelectionFg
 
 	switch {
 	case v.loading:
-		pane.WriteString(statusLoading + "\n")
+		pane.WriteString(reposPaneTitle + "\n\n")
+		pane.WriteString(theme.Wrap(theme.FgDim, reposLoadingTitle) + "\n")
 
 		return
 	case v.loadErr != nil:
-		pane.WriteString(fmt.Sprintf("Error loading projects: %v\n", v.loadErr))
+		pane.WriteString(reposPaneTitle + "\n\n")
+		pane.WriteString(theme.Wrap(theme.FgErr, fmt.Sprintf("✕ Error loading projects: %v", v.loadErr)) + "\n")
 
 		return
 	case len(v.filtered) == 0:
-		pane.WriteString(statusEmpty + "\n")
+		pane.WriteString(reposHeader(0, len(v.all)))
+		writeReposEmptyState(pane, v.query == "")
 
 		return
 	}
 
+	pane.WriteString(reposHeader(len(v.filtered), len(v.all)))
+
+	innerW, _ := pane.InnerSize()
+	now := time.Now()
 	for _, p := range v.filtered {
-		icon := iconUnfavorited
+		icon := iconNoFav
+		iconW := 2 // iconNoFav is two spaces
 		if v.favSet[p.PathWithNamespace] {
-			icon = iconFavorited
+			icon = accent(iconFavorited)
+			iconW = 1 // "★" is a single cell
 		}
-		pane.WriteString(fmt.Sprintf("%s %s\n", icon, p.PathWithNamespace))
+		ago := theme.Relative(p.LastActivityAt, now)
+		pane.WriteString(formatRepoRow(icon, iconW, p.PathWithNamespace, ago, innerW) + "\n")
 	}
 
+	// Header line at row 0 means data rows start at row 1; offset cursor +1.
 	if v.cursor >= 0 && v.cursor < len(v.filtered) {
-		placeCursor(pane, v.cursor, len(v.filtered))
+		placeCursor(pane, v.cursor+1, len(v.filtered)+1)
 	}
+}
+
+// reposHeader returns the dim "[1] Repositories · N/M" line that prefixes
+// every populated render. Trailing newline included; the empty body that
+// follows starts on the next row.
+func reposHeader(filtered, total int) string {
+	return reposPaneTitle + dim(fmt.Sprintf(" · %d/%d", filtered, total)) + "\n"
+}
+
+// writeReposEmptyState picks between the first-run hint (no projects loaded
+// at all → point at the config) and the filter-miss hint (data loaded but
+// nothing matches the query). Wording mirrors states.js.
+func writeReposEmptyState(pane *gocui.View, firstRun bool) {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	if firstRun {
+		sb.WriteString(dim(" No projects yet.") + "\n\n")
+		sb.WriteString(dim(" Add a GitLab token to:") + "\n")
+		sb.WriteString(dim(" ~/.config/lazylab/config.yaml") + "\n\n")
+		sb.WriteString(" " + accent("o") + dim("  opens the config in $EDITOR") + "\n")
+		pane.WriteString(sb.String())
+
+		return
+	}
+	sb.WriteString(dim(" No projects match.") + "\n\n")
+	sb.WriteString(dim(" Press ") + accent("Esc") + dim(" to clear the filter,") + "\n")
+	sb.WriteString(dim(" or ") + accent("/") + dim(" to refine it.") + "\n")
+	pane.WriteString(sb.String())
 }
 
 // Bindings returns the per-view keybindings owned by the repos pane, both on

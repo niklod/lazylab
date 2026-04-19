@@ -213,6 +213,9 @@ Active on `go-rewrite` branch. See `docs/migration/` for overview, stack rationa
   - **Testing:** view-level test: advance clock past poll interval, assert view re-renders with new data. Absence test: grep `internal/cache/` for `OnRefresh`/`CacheRefreshed`/`chan.*Event` — must be zero matches.
 
 ### Phase G7: Polish + Cut-Over
+- [x] Repos & MRs list design parity — match `design/project/wireframes/layout.js` for icons, colours, header, alignment, and empty/loading copy
+  - **DoD:** Repos pane shows accent-coloured `★` only for favourites (no glyph for non-favs), right-aligned dim relative timestamp, `[1] Repositories · N/M` header. MRs pane shows coloured state glyphs (●/◐/✓/✕), draft detection by title prefix (`Draft:` / `[Draft]` / `[WIP]` / `WIP:`), `<icon> !IID title @author` order with right-aligned dim author, `[2] Merge Requests · state:X · owner:Y · N/M` header. Both panes use white-on-accent selection (`theme.ColorSelectionFg`) and switch to instructional empty-state copy from `design/project/wireframes/states.js` (first-run vs filter-miss for repos; live filter values + S/O/R hint for MRs).
+  - **Testing:** `make build && make lint && make test && make test-e2e`. Unit: `internal/tui/views/row_format_test.go` (column alignment, ellipsis truncation, grapheme-aware width), `internal/tui/views/repos_test.go::TestRender_HeaderAndFavouriteIcon_MatchDesign` + empty-state cases, `internal/tui/views/mrs_test.go::TestRender_StateGlyphs_ColouredPerDesign` + empty-state case, `internal/models/merge_request_test.go::TestMergeRequest_IsDraft`. E2E: updated `tests/e2e/repos_render_test.go` and `tests/e2e/mrs_render_test.go` assert on the new header / icon shape.
 - [ ] Command palette, error handling improvements
   - **DoD:** palette lists registered commands; errors surface as toasts, not crashes.
   - **Testing:** e2e for palette invocation + error path.

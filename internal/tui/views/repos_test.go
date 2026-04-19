@@ -299,9 +299,75 @@ func (s *ReposViewSuite) TestRender_CursorBeyondViewport_ScrollsAndCursorStaysIn
 	_, innerH := pane.InnerSize()
 	_, cy := pane.Cursor()
 	s.Require().Positive(oy, "origin must scroll down when cursor is below viewport")
-	s.Require().Equal(v.cursor-oy, cy, "on-screen cursor row must be the content row minus origin")
+	// Header line at row 0 shifts data rows by +1, so cursor=15 lives at content row 16.
+	s.Require().Equal(v.cursor+1-oy, cy, "on-screen cursor row must be the content row minus origin")
 	s.Require().GreaterOrEqual(cy, 0, "on-screen cursor row non-negative")
 	s.Require().Less(cy, innerH, "on-screen cursor row within viewport height")
+}
+
+func (s *ReposViewSuite) TestRender_HeaderAndFavouriteIcon_MatchDesign() {
+	now := time.Now().UTC()
+	projects := []*models.Project{
+		{ID: 1, PathWithNamespace: "grp/fav", LastActivityAt: now.Add(-2 * time.Minute)},
+		{ID: 2, PathWithNamespace: "grp/plain", LastActivityAt: now.Add(-3 * time.Hour)},
+	}
+	s.app.Config.Repositories.Favorites = []string{"grp/fav"}
+
+	v := NewRepos(s.g, s.app)
+	s.seed(v, projects)
+
+	pane, perr := s.g.View(keymap.ViewRepos)
+	s.Require().NoError(perr)
+	v.Render(pane)
+
+	buf := pane.Buffer()
+	s.Require().Contains(buf, "[1] Repositories")
+	s.Require().Contains(buf, "2/2", "header includes filtered/total count")
+	// gocui re-emits SGR sequences with a trailing `;` so we match the
+	// truecolor RGB prefix rather than the exact `\x1b[...m` byte form.
+	s.Require().Contains(buf, "\x1b[38;2;217;119;87", "favourite icon carries the accent RGB code")
+	s.Require().Contains(buf, "★", "favourite glyph rendered")
+	s.Require().Contains(buf, "grp/fav")
+	s.Require().Contains(buf, "grp/plain")
+	s.Require().Contains(buf, "\x1b[38;2;122;121;112", "dim RGB code appears for timestamps + header meta")
+	s.Require().NotContains(buf, "☆", "non-favourites no longer render the empty star glyph")
+}
+
+func (s *ReposViewSuite) TestRender_FirstRunEmpty_ShowsConfigHint() {
+	v := NewRepos(s.g, s.app)
+	v.mu.Lock()
+	v.loading = false
+	v.all = nil
+	v.filtered = nil
+	v.query = ""
+	v.mu.Unlock()
+
+	pane, perr := s.g.View(keymap.ViewRepos)
+	s.Require().NoError(perr)
+	v.Render(pane)
+
+	buf := pane.Buffer()
+	s.Require().Contains(buf, "No projects yet")
+	s.Require().Contains(buf, "~/.config/lazylab/config.yaml")
+}
+
+func (s *ReposViewSuite) TestRender_FilterMissEmpty_ShowsResetHint() {
+	v := NewRepos(s.g, s.app)
+	v.mu.Lock()
+	v.loading = false
+	v.all = []*models.Project{{ID: 1, PathWithNamespace: "grp/x"}}
+	v.allLower = []string{"grp/x"}
+	v.query = "no-match-anywhere"
+	v.applyFilterLocked()
+	v.mu.Unlock()
+
+	pane, perr := s.g.View(keymap.ViewRepos)
+	s.Require().NoError(perr)
+	v.Render(pane)
+
+	buf := pane.Buffer()
+	s.Require().Contains(buf, "No projects match")
+	s.Require().Contains(buf, "Esc")
 }
 
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; parallel runs race.

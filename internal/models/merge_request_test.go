@@ -88,6 +88,31 @@ func (s *MergeRequestSuite) TestMergeRequest_Predicates_DelegateToState() {
 	}
 }
 
+func (s *MergeRequestSuite) TestMergeRequest_IsDraft() {
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{title: "Draft: cleanup auth", want: true},
+		{title: "draft: lowercase too", want: true},
+		{title: "[Draft] bracket form", want: true},
+		{title: "[WIP] legacy form", want: true},
+		{title: "[wip] lowercase legacy", want: true},
+		{title: "WIP: colon legacy", want: true},
+		{title: "  Draft: leading spaces", want: true},
+		{title: "Add retry button", want: false},
+		{title: "Drafty title without colon", want: false},
+		{title: "Some Draft: in middle", want: false},
+		{title: "", want: false},
+	}
+	for _, tt := range tests {
+		s.Run(tt.title, func() {
+			mr := models.MergeRequest{Title: tt.title}
+			s.Require().Equal(tt.want, mr.IsDraft())
+		})
+	}
+}
+
 func TestMergeRequestSuite(t *testing.T) {
 	t.Parallel()
 	suite.Run(t, new(MergeRequestSuite))

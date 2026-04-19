@@ -111,9 +111,11 @@ func (s *MRsViewSuite) TestSetProjectSync_PopulatesTable() {
 	s.mrs.Render(pane)
 
 	buf := pane.Buffer()
-	s.Require().Contains(buf, "!10 O alice")
+	s.Require().Contains(buf, "!10")
 	s.Require().Contains(buf, "Feature")
-	s.Require().Contains(buf, "!11 O bob")
+	s.Require().Contains(buf, "@alice")
+	s.Require().Contains(buf, "!11")
+	s.Require().Contains(buf, "@bob")
 	s.Require().Contains(path, "/projects/42/merge_requests")
 }
 
@@ -134,12 +136,11 @@ func (s *MRsViewSuite) TestSetProjectSync_WrapsFetchError() {
 	s.Require().Contains(pane.Buffer(), "Error loading merge requests")
 }
 
-func (s *MRsViewSuite) TestRender_WithFiltersAndItems_IncludesBanner() {
+func (s *MRsViewSuite) TestRender_WithFiltersAndItems_IncludesHeader() {
 	s.buildView(http.NotFound)
 	s.mrs.mu.Lock()
 	s.mrs.stateFilter = models.MRStateFilterMerged
 	s.mrs.ownerFilter = models.MROwnerFilterMine
-	s.mrs.bannerLine = renderBannerLine(s.mrs.stateFilter, s.mrs.ownerFilter)
 	s.mrs.mu.Unlock()
 
 	s.seedItems([]*models.MergeRequest{
@@ -148,8 +149,13 @@ func (s *MRsViewSuite) TestRender_WithFiltersAndItems_IncludesBanner() {
 	pane, _ := s.g.View(keymap.ViewMRs)
 	s.mrs.Render(pane)
 
-	s.Require().Contains(pane.Buffer(), "[state=merged owner=mine]")
-	s.Require().Contains(pane.Buffer(), "!1 M a")
+	buf := pane.Buffer()
+	s.Require().Contains(buf, "[2] Merge Requests")
+	s.Require().Contains(buf, "state:merged")
+	s.Require().Contains(buf, "owner:mine")
+	s.Require().Contains(buf, "1/1")
+	s.Require().Contains(buf, "!1")
+	s.Require().Contains(buf, "@a")
 }
 
 func (s *MRsViewSuite) TestFilter_SubstringCaseInsensitive_TitleOrAuthor() {
@@ -285,6 +291,18 @@ func (s *MRsViewSuite) TestClearFilter_NoopWhenNoQuery() {
 	s.Require().Len(s.mrs.filtered, 1)
 }
 
+func (s *MRsViewSuite) TestBeginLoad_SupersedingFetchCancelsPreviousContext() {
+	s.buildView(http.NotFound)
+
+	first, _, _, _ := s.mrs.beginLoad(context.Background(), &models.Project{ID: 1, PathWithNamespace: "grp/x"}) //nolint:dogsled
+	s.Require().NoError(first.Err(), "freshly derived context starts uncancelled")
+
+	second, _, _, _ := s.mrs.beginLoad(context.Background(), &models.Project{ID: 2, PathWithNamespace: "grp/y"}) //nolint:dogsled
+	s.Require().ErrorIs(first.Err(), context.Canceled,
+		"previous in-flight context must be cancelled when a new load begins")
+	s.Require().NoError(second.Err(), "newly derived context is not cancelled by its own birth")
+}
+
 func (s *MRsViewSuite) TestApply_StaleLoadIgnored() {
 	s.buildView(http.NotFound)
 
@@ -304,6 +322,50 @@ func (s *MRsViewSuite) TestApply_StaleLoadIgnored() {
 	defer s.mrs.mu.Unlock()
 	s.Require().Len(s.mrs.all, 1, "matching seq applies cleanly")
 	s.Require().Equal(42, s.mrs.all[0].IID)
+}
+
+func (s *MRsViewSuite) TestRender_StateGlyphs_ColouredPerDesign() {
+	s.buildView(http.NotFound)
+	s.seedItems([]*models.MergeRequest{
+		{IID: 1, Title: "open one", Author: models.User{Username: "a"}, State: models.MRStateOpened},
+		{IID: 2, Title: "merged one", Author: models.User{Username: "b"}, State: models.MRStateMerged},
+		{IID: 3, Title: "closed one", Author: models.User{Username: "c"}, State: models.MRStateClosed},
+		{IID: 4, Title: "[WIP] draft one", Author: models.User{Username: "d"}, State: models.MRStateOpened},
+	})
+
+	pane, _ := s.g.View(keymap.ViewMRs)
+	s.mrs.Render(pane)
+
+	buf := pane.Buffer()
+	// gocui re-emits SGR sequences with a trailing `;` — match the truecolor
+	// RGB prefix rather than the full `\x1b[...m` byte form.
+	s.Require().Contains(buf, "\x1b[38;2;74;168;90", "opened MR uses ok-coloured glyph")
+	s.Require().Contains(buf, "●")
+	s.Require().Contains(buf, "\x1b[38;2;138;92;200", "merged MR uses merged-coloured glyph")
+	s.Require().Contains(buf, "✓")
+	s.Require().Contains(buf, "\x1b[38;2;204;80;64", "closed MR uses err-coloured glyph")
+	s.Require().Contains(buf, "✕")
+	s.Require().Contains(buf, "\x1b[38;2;138;133;123", "WIP-titled MR uses draft-coloured glyph")
+	s.Require().Contains(buf, "◐")
+}
+
+func (s *MRsViewSuite) TestRender_EmptyResults_ShowsHintWithLiveFilters() {
+	s.buildView(http.NotFound)
+	s.mrs.mu.Lock()
+	s.mrs.current = &models.Project{ID: 1, PathWithNamespace: "grp/x"}
+	s.mrs.loading = false
+	s.mrs.stateFilter = models.MRStateFilterClosed
+	s.mrs.ownerFilter = models.MROwnerFilterMine
+	s.mrs.mu.Unlock()
+
+	pane, _ := s.g.View(keymap.ViewMRs)
+	s.mrs.Render(pane)
+
+	buf := pane.Buffer()
+	s.Require().Contains(buf, "No MRs match state:closed owner:mine")
+	s.Require().Contains(buf, "S")
+	s.Require().Contains(buf, "O")
+	s.Require().Contains(buf, "R")
 }
 
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; parallel runs race.
