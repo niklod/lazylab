@@ -12,11 +12,14 @@ import (
 func TestPaneRects_StandardTerminal(t *testing.T) {
 	t.Parallel()
 
+	// 120x40 — footer reserves bottom 4 rows (2 inner rows after gocui's
+	// frame padding), panes reach y1=36.
 	r := paneRects(120, 40)
 
-	require.Equal(t, rect{0, 0, 48, 20}, r.repos)
-	require.Equal(t, rect{0, 20, 48, 40}, r.mrs)
-	require.Equal(t, rect{48, 0, 120, 40}, r.detail)
+	require.Equal(t, rect{0, 0, 48, 18}, r.repos)
+	require.Equal(t, rect{0, 18, 48, 36}, r.mrs)
+	require.Equal(t, rect{48, 0, 120, 36}, r.detail)
+	require.Equal(t, rect{0, 36, 120, 40}, r.footer)
 }
 
 func TestPaneRects_SmallTerminal(t *testing.T) {
@@ -24,9 +27,10 @@ func TestPaneRects_SmallTerminal(t *testing.T) {
 
 	r := paneRects(80, 24)
 
-	require.Equal(t, rect{0, 0, 32, 12}, r.repos)
-	require.Equal(t, rect{0, 12, 32, 24}, r.mrs)
-	require.Equal(t, rect{32, 0, 80, 24}, r.detail)
+	require.Equal(t, rect{0, 0, 32, 10}, r.repos)
+	require.Equal(t, rect{0, 10, 32, 20}, r.mrs)
+	require.Equal(t, rect{32, 0, 80, 20}, r.detail)
+	require.Equal(t, rect{0, 20, 80, 24}, r.footer)
 }
 
 func TestPaneRects_LeftColumnsShareWidth(t *testing.T) {
@@ -50,11 +54,26 @@ func TestPaneRects_LeftColumnsShareWidth(t *testing.T) {
 			require.Equal(t, r.repos.x1, r.mrs.x1, "left column width must match between repos and mrs")
 			require.Equal(t, r.repos.x1, r.detail.x0, "detail must start where left column ends")
 			require.Equal(t, tt.maxX, r.detail.x1, "detail must reach the right edge")
-			require.Equal(t, tt.maxY, r.mrs.y1, "mrs must reach the bottom edge")
-			require.Equal(t, tt.maxY, r.detail.y1, "detail must reach the bottom edge")
+			require.Equal(t, tt.maxY-footerHeight, r.mrs.y1, "mrs must stop above the footer")
+			require.Equal(t, tt.maxY-footerHeight, r.detail.y1, "detail must stop above the footer")
+			require.Equal(t, tt.maxY, r.footer.y1, "footer must reach the bottom edge")
+			require.Equal(t, r.mrs.y1, r.footer.y0, "footer must start where mrs ends")
 			require.Equal(t, r.repos.y1, r.mrs.y0, "repos bottom must meet mrs top")
 		})
 	}
+}
+
+func TestPaneRects_TinyTerminalFallback(t *testing.T) {
+	t.Parallel()
+
+	// maxY=3: footer would leave panesBottom=-1 which is < 2 → fallback
+	// restores panesBottom to maxY so panes still fit; footer rect
+	// collapses to zero height and manageFooter's size-guard deletes it.
+	r := paneRects(40, 3)
+
+	require.Equal(t, 3, r.mrs.y1, "mrs falls back to full height in tiny terminal")
+	require.Equal(t, 3, r.detail.y1)
+	require.Equal(t, r.footer.y0, r.footer.y1, "footer rect collapses to zero height")
 }
 
 // TestLayout_TinyTerminalIsNoOp exercises the maxX < 2 / maxY < 2 guard.

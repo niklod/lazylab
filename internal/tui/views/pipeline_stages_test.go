@@ -208,9 +208,9 @@ func (s *PipelineStagesSuite) TestRender_StagesFooterContainsSeparatorOverallAnd
 	s.Require().Contains(buf, "a3f7b2e", "commit short SHA")
 	s.Require().Contains(buf, "ago", "relative age fragment")
 	s.Require().Contains(buf, "@mira.k", "triggered-by fragment with username")
-	s.Require().Contains(buf, "j/k", "keybind strip shows j/k hint")
-	s.Require().Contains(buf, "Enter", "keybind strip shows Enter")
-	s.Require().Contains(buf, "retry", "keybind strip shows retry")
+	// Keybind strip moved to the global FooterView.
+	s.Require().NotContains(buf, "j/k")
+	s.Require().NotContains(buf, "retry")
 }
 
 func (s *PipelineStagesSuite) TestRender_CursorTracksChromeOffset() {
@@ -323,7 +323,7 @@ func TestRenderKeybindStrip_StagesMode(t *testing.T) {
 	t.Parallel()
 
 	strip := renderKeybindStrip(keybindModePipelineStages)
-	for _, want := range []string{"j/k", "Enter", "r", "o", "R", "a", "toggle auto-refresh"} {
+	for _, want := range []string{"h/l", "pane", "j/k", "job", "Enter", "log", "r", "retry", "R", "refresh", "a", "auto", "o", "browser", "[/]", "tab"} {
 		require.Contains(t, strip, want, "stages strip missing %q", want)
 	}
 	require.Contains(t, strip, theme.FgAccent, "keys painted in accent")
@@ -334,7 +334,7 @@ func TestRenderKeybindStrip_LogMode(t *testing.T) {
 	t.Parallel()
 
 	strip := renderKeybindStrip(keybindModePipelineLog)
-	for _, want := range []string{"j/k", "ctrl+d/u", "y", "copy", "Esc", "close"} {
+	for _, want := range []string{"j/k", "ctrl+d/u", "y", "copy", "Esc", "close", "g/G", "top/bot"} {
 		require.Contains(t, strip, want, "log strip missing %q", want)
 	}
 }

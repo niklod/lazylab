@@ -228,15 +228,16 @@ func writeReposEmptyState(pane *gocui.View, firstRun bool) {
 }
 
 // Bindings returns the per-view keybindings owned by the repos pane, both on
-// the pane itself (j/k/g/G/t//) and on the ephemeral search input view
-// (Enter/Esc).
+// the pane itself (j/k/g/G/f//) and on the ephemeral search input view
+// (Enter/Esc). `f` toggles favourite — matches design/wireframes/layout.js
+// and the global footer hint strip.
 func (v *ReposView) Bindings() []keymap.Binding {
 	return []keymap.Binding{
 		{View: keymap.ViewRepos, Key: 'j', Handler: v.handleDown},
 		{View: keymap.ViewRepos, Key: 'k', Handler: v.handleUp},
 		{View: keymap.ViewRepos, Key: 'g', Handler: v.handleTop},
 		{View: keymap.ViewRepos, Key: 'G', Handler: v.handleBottom},
-		{View: keymap.ViewRepos, Key: 't', Handler: v.handleToggleFavorite},
+		{View: keymap.ViewRepos, Key: 'f', Handler: v.handleToggleFavorite},
 		{View: keymap.ViewRepos, Key: '/', Handler: v.handleOpenSearch},
 		{View: keymap.ViewRepos, Key: gocui.KeyEsc, Handler: v.handleClearFilter},
 		{View: keymap.ViewReposSearch, Key: gocui.KeyEnter, Handler: v.handleSubmitSearch},

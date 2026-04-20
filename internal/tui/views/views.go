@@ -11,20 +11,29 @@ import (
 	"github.com/niklod/lazylab/internal/tui/keymap"
 )
 
-// Views aggregates every per-pane widget. Phase G4 adds the Detail pane
-// (overview sub-task); tab dispatch lands with the diff/conversation/pipeline
-// sub-tasks.
+// Views aggregates every per-pane widget plus cross-pane orchestration
+// helpers. G4 introduced Detail + its tabs; G5 adds the MR action modal
+// (close/merge) and the FocusOrder override that traps keys while the
+// modal is up.
 type Views struct {
-	Repos  *ReposView
-	MRs    *MRsView
-	Detail *DetailView
+	g            *gocui.Gui
+	app          *appcontext.AppContext
+	Repos        *ReposView
+	MRs          *MRsView
+	Detail       *DetailView
+	ActionsModal *MRActionModal
+	Footer       *FooterView
 }
 
 func New(g *gocui.Gui, app *appcontext.AppContext) *Views {
 	return &Views{
-		Repos:  NewRepos(g, app),
-		MRs:    NewMRs(g, app),
-		Detail: NewDetail(g, app),
+		g:            g,
+		app:          app,
+		Repos:        NewRepos(g, app),
+		MRs:          NewMRs(g, app),
+		Detail:       NewDetail(g, app),
+		ActionsModal: NewMRActionModal(),
+		Footer:       NewFooter(),
 	}
 }
 
@@ -51,12 +60,49 @@ func (v *Views) Bindings() []keymap.Binding {
 			Key:     gocui.KeyEnter,
 			Handler: v.selectMRForDetail,
 		})
+		out = append(out,
+			keymap.Binding{View: keymap.ViewMRs, Key: 'x', Handler: v.openCloseModal},
+			keymap.Binding{View: keymap.ViewMRs, Key: 'M', Handler: v.openMergeModal},
+		)
 	}
 	if v.Detail != nil {
 		out = append(out, v.detailBindings()...)
 	}
+	if v.ActionsModal != nil {
+		out = append(out, v.mrActionModalBindings()...)
+	}
 
 	return out
+}
+
+// mrActionModalBindings registers Enter/Esc + toggle keys while the modal
+// owns focus. All handlers no-op when ActionsModal.IsActive() is false so
+// stale gocui key routing cannot fire the mutation path unexpectedly.
+func (v *Views) mrActionModalBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{View: keymap.ViewMRActionsModal, Key: gocui.KeyEnter, Handler: v.confirmMRAction},
+		{View: keymap.ViewMRActionsModal, Key: gocui.KeyEsc, Handler: v.cancelMRAction},
+		{View: keymap.ViewMRActionsModal, Key: 'd', Handler: v.toggleModalDeleteBranch},
+		{View: keymap.ViewMRActionsModal, Key: 's', Handler: v.toggleModalSquash},
+	}
+}
+
+func (v *Views) toggleModalDeleteBranch(_ *gocui.Gui, _ *gocui.View) error {
+	if v.ActionsModal == nil {
+		return nil
+	}
+	v.ActionsModal.ToggleDeleteBranch()
+
+	return nil
+}
+
+func (v *Views) toggleModalSquash(_ *gocui.Gui, _ *gocui.View) error {
+	if v.ActionsModal == nil {
+		return nil
+	}
+	v.ActionsModal.ToggleSquash()
+
+	return nil
 }
 
 // FocusOrder returns the active focus cycle — includes the Diff-tab
@@ -66,7 +112,15 @@ func (v *Views) Bindings() []keymap.Binding {
 // SetFocusOrderProvider at startup.
 func (v *Views) FocusOrder() []string {
 	base := []string{keymap.ViewRepos, keymap.ViewMRs, keymap.ViewDetail}
-	if v == nil || v.Detail == nil {
+	if v == nil {
+		return base
+	}
+	// Modal takes exclusive focus — no other pane is reachable until it
+	// dismisses. Keeps Enter/Esc from leaking through to the MRs pane.
+	if v.ActionsModal != nil && v.ActionsModal.IsActive() {
+		return []string{keymap.ViewMRActionsModal}
+	}
+	if v.Detail == nil {
 		return base
 	}
 	switch v.Detail.CurrentTab() {

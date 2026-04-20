@@ -69,10 +69,11 @@ func (s *ProjectsSuite) TestListProjects_PaginatesAndMapsDomainFields() {
 	)
 	s.Require().NoError(err)
 
-	projects, err := client.ListProjects(context.Background(), gitlab.ListProjectsOptions{})
+	includeArchived := true
+	projects, err := client.ListProjects(context.Background(), gitlab.ListProjectsOptions{Archived: &includeArchived})
 
 	s.Require().NoError(err)
-	s.Require().Len(projects, 3)
+	s.Require().Len(projects, 3, "Archived=true keeps the archived project in the list")
 
 	s.Require().Equal(1, projects[0].ID)
 	s.Require().Equal("grp/alpha", projects[0].PathWithNamespace)
@@ -92,7 +93,7 @@ func (s *ProjectsSuite) TestListProjects_PaginatesAndMapsDomainFields() {
 	}
 	firstQ := gotQueries[0]
 	s.Require().Equal("true", firstQ.Get("membership"))
-	s.Require().Equal("false", firstQ.Get("archived"))
+	s.Require().Equal("true", firstQ.Get("archived"))
 	s.Require().Equal("last_activity_at", firstQ.Get("order_by"))
 	s.Require().Equal("desc", firstQ.Get("sort"))
 	s.Require().Equal(strconv.Itoa(100), firstQ.Get("per_page"))
@@ -173,6 +174,54 @@ func (s *ProjectsSuite) TestListProjects_CachedClient_ReusesResultOnSecondCall()
 	s.Require().NoError(err)
 	s.Require().Len(second, 1)
 	s.Require().Equal(int32(1), hits.Load(), "cached ListProjects skips HTTP on fresh entry")
+}
+
+func (s *ProjectsSuite) TestListProjects_DropsArchivedEvenIfUpstreamReturnsThem() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Upstream ignored archived=false and returned a mixed page.
+		_, _ = fmt.Fprint(w, `[
+			{"id":1,"name":"live","path_with_namespace":"grp/live","archived":false,"web_url":"u","last_activity_at":"2026-04-10T10:00:00Z"},
+			{"id":2,"name":"dead","path_with_namespace":"grp/dead","archived":true,"web_url":"u","last_activity_at":"2024-01-01T10:00:00Z"},
+			{"id":3,"name":"alsoLive","path_with_namespace":"grp/alsoLive","archived":false,"web_url":"u","last_activity_at":"2026-04-11T10:00:00Z"}
+		]`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+	)
+	s.Require().NoError(err)
+
+	projects, err := client.ListProjects(context.Background(), gitlab.ListProjectsOptions{})
+	s.Require().NoError(err)
+	s.Require().Len(projects, 2, "archived project filtered out")
+	for _, p := range projects {
+		s.Require().False(p.Archived, "archived project slipped through: %s", p.PathWithNamespace)
+	}
+}
+
+func (s *ProjectsSuite) TestListProjects_KeepsArchivedWhenExplicitlyRequested() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[
+			{"id":1,"name":"dead","path_with_namespace":"grp/dead","archived":true,"web_url":"u","last_activity_at":"2024-01-01T10:00:00Z"}
+		]`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+	)
+	s.Require().NoError(err)
+
+	archived := true
+	projects, err := client.ListProjects(context.Background(), gitlab.ListProjectsOptions{Archived: &archived})
+	s.Require().NoError(err)
+	s.Require().Len(projects, 1, "Archived=true keeps archived projects")
+	s.Require().True(projects[0].Archived)
 }
 
 func TestProjectsSuite(t *testing.T) {

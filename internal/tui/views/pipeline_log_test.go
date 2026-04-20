@@ -69,7 +69,8 @@ func (s *JobLogSuite) TestSetJob_RendersBodyAndFooter() {
 	s.Require().Contains(buf, "end of log · 2 lines", "footer reflects trimmed body line count")
 	s.Require().Contains(buf, "press y to copy", "footer advertises copy hint")
 	s.Require().Contains(buf, "Esc to close", "footer advertises close hint")
-	s.Require().Contains(buf, "j/k", "keybind strip rendered below footer")
+	// Keybind strip moved to the global FooterView.
+	s.Require().NotContains(buf, "j/k")
 	s.Require().NotContains(buf, "test/test:unit",
 		"job header lives on the pane chrome, not in the scrollable body")
 	s.Require().Equal(s.job(), s.v.CurrentJob())

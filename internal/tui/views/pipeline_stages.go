@@ -286,8 +286,7 @@ func (p *PipelineStagesView) Render(pane *gocui.View) {
 	}
 	if p.status != "" {
 		pane.WriteString(p.status + "\n")
-		pane.WriteString("\n" + renderKeybindStrip(keybindModePipelineStages) + "\n")
-		placeCursor(pane, chromeOffset, chromeOffset+3)
+		placeCursor(pane, chromeOffset, chromeOffset+1)
 
 		return
 	}
@@ -295,28 +294,26 @@ func (p *PipelineStagesView) Render(pane *gocui.View) {
 		pane.WriteString(row.text + "\n")
 	}
 
-	footer := p.renderFooterLocked(innerW)
+	footer := p.renderPaneSummaryLocked(innerW)
 	pane.WriteString(footer)
-	// Content rows start at `chromeOffset`; the footer adds 5 visible lines
-	// (blank, separator, overall, blank, keybind strip) plus the trailing
-	// newline. Total lines must account for all three regions so placeCursor
-	// can scroll correctly when the pane is short.
-	const footerLines = 5
+	// Content rows start at `chromeOffset`; the footer adds 3 visible lines
+	// (blank, separator, overall). The keybind strip used to live here but
+	// now ships from the global FooterView (design/wireframes/layout.js).
+	const footerLines = 3
 	totalLines := chromeOffset + len(p.rows) + footerLines
 	placeCursor(pane, p.cursor+chromeOffset, totalLines)
 }
 
-// renderFooterLocked returns the pane's trailing decoration — blank line,
-// separator, overall summary, blank line, keybind strip. Caller holds p.mu.
-func (p *PipelineStagesView) renderFooterLocked(innerW int) string {
+// renderPaneSummaryLocked returns the pane's trailing decoration — blank line,
+// separator, overall summary. The keybind strip has moved to the global
+// FooterView (mounted by tui.manageFooter). Caller holds p.mu.
+func (p *PipelineStagesView) renderPaneSummaryLocked(innerW int) string {
 	var sb strings.Builder
 	sb.WriteString("\n")
 	sb.WriteString(renderPipelineSeparator(innerW) + "\n")
 	if p.detail != nil {
 		sb.WriteString(renderOverallLine(p.detail.Pipeline, p.detail.Pipeline.TriggeredBy, pipelineStagesNow()) + "\n")
 	}
-	sb.WriteString("\n")
-	sb.WriteString(renderKeybindStrip(keybindModePipelineStages) + "\n")
 
 	return sb.String()
 }

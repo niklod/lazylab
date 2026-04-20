@@ -499,8 +499,7 @@ func (c *ConversationView) Render(pane *gocui.View) {
 
 	if status := c.statusLineLocked(); status != "" {
 		pane.WriteString(status + "\n")
-		pane.WriteString("\n" + renderKeybindStrip(keybindModeConversation) + "\n")
-		placeCursor(pane, chromeOffset, chromeOffset+3)
+		placeCursor(pane, chromeOffset, chromeOffset+1)
 
 		return
 	}
@@ -523,14 +522,11 @@ func (c *ConversationView) Render(pane *gocui.View) {
 		// line, not the logical row index.
 		physicalOffset += strings.Count(row.text, "\n") + 1
 	}
-	pane.WriteString("\n")
-	pane.WriteString(renderKeybindStrip(keybindModeConversation) + "\n")
-
 	cursorLine := chromeOffset
 	if selectedRow >= 0 && selectedRow < len(rowPhysicalLine) {
 		cursorLine = chromeOffset + rowPhysicalLine[selectedRow]
 	}
-	totalLines := chromeOffset + physicalOffset + 2
+	totalLines := chromeOffset + physicalOffset
 	placeCursor(pane, cursorLine, totalLines)
 }
 

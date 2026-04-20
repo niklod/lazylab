@@ -76,6 +76,8 @@ func (c *Client) listProjectsRaw(ctx context.Context, r ListProjectsOptions) ([]
 		},
 	}
 
+	excludeArchived := r.Archived != nil && !*r.Archived
+
 	var out []*models.Project
 	for {
 		page, resp, err := c.api.Projects.ListProjects(listOpts, gogitlab.WithContext(ctx))
@@ -83,6 +85,14 @@ func (c *Client) listProjectsRaw(ctx context.Context, r ListProjectsOptions) ([]
 			return nil, fmt.Errorf("gitlab: list projects page %d: %w", listOpts.Page, err)
 		}
 		for _, p := range page {
+			// Belt-and-suspenders filter: some GitLab instances still
+			// include archived projects when `archived=false` is passed
+			// (observed against self-hosted 16.x). Drop them here so the
+			// invariant "Archived=false ⇒ no archived repos" holds
+			// regardless of upstream behaviour.
+			if excludeArchived && p != nil && p.Archived {
+				continue
+			}
 			out = append(out, toDomainProject(p))
 		}
 		if resp == nil || resp.NextPage == 0 {

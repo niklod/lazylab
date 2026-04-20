@@ -151,7 +151,6 @@ func (l *JobLogView) Render(pane *gocui.View) {
 	}
 	if l.status != "" {
 		pane.WriteString(l.status + "\n")
-		pane.WriteString("\n" + renderKeybindStrip(keybindModePipelineLog) + "\n")
 
 		return
 	}
@@ -159,7 +158,6 @@ func (l *JobLogView) Render(pane *gocui.View) {
 	if l.footer != "" {
 		pane.WriteString("\n\n" + l.footer)
 	}
-	pane.WriteString("\n\n" + renderKeybindStrip(keybindModePipelineLog) + "\n")
 }
 
 // ScrollBy shifts the pane origin by delta rows, clamped to content extent.

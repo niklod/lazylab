@@ -325,15 +325,17 @@ func (s *ConversationViewSuite) TestRender_GeneralCommentsSectionBelowDivider() 
 	s.Require().Contains(buf, "Let's ship it.")
 }
 
-func (s *ConversationViewSuite) TestRender_KeybindStripAppendedToPane() {
+func (s *ConversationViewSuite) TestRender_NoKeybindStripInPane() {
 	s.view.SetDiscussions([]*models.Discussion{reviewThread("a", false)})
 	pane := newBufferPane(s.T())
 
 	s.view.Render(pane)
 	buf := pane.Buffer()
 
-	s.Require().Contains(buf, "expand all")
-	s.Require().Contains(buf, "thread")
+	// Keybind strip moved to the global FooterView.
+	s.Require().NotContains(buf, "expand all")
+	// Thread card itself still renders.
+	s.Require().Contains(buf, "Thread")
 }
 
 func (s *ConversationViewSuite) TestSetDiscussions_SkipsSystemNotesInDisplay() {

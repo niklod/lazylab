@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jesseduffield/gocui"
 	"github.com/spf13/afero"
@@ -366,6 +367,99 @@ func (s *MRsViewSuite) TestRender_EmptyResults_ShowsHintWithLiveFilters() {
 	s.Require().Contains(buf, "S")
 	s.Require().Contains(buf, "O")
 	s.Require().Contains(buf, "R")
+}
+
+func (s *MRsViewSuite) TestLastSync_ZeroBeforeAnyLoad() {
+	s.buildView(http.NotFound)
+
+	s.Require().True(s.mrs.LastSync().IsZero())
+}
+
+func (s *MRsViewSuite) TestLastSync_AdvancesOnSuccessfulLoad() {
+	s.buildView(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[]`)
+	})
+
+	before := time.Now()
+	s.Require().NoError(s.mrs.SetProjectSync(context.Background(), &models.Project{ID: 1}))
+
+	s.Require().False(s.mrs.LastSync().IsZero())
+	s.Require().True(s.mrs.LastSync().After(before.Add(-time.Second)))
+}
+
+func (s *MRsViewSuite) TestLastSync_NotAdvancedOnErrorLoad() {
+	s.buildView(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"500"}`)
+	})
+
+	_ = s.mrs.SetProjectSync(context.Background(), &models.Project{ID: 1})
+
+	s.Require().True(s.mrs.LastSync().IsZero(), "error path must not advance lastSync")
+}
+
+func (s *MRsViewSuite) TestCursorInfo_NoMRs() {
+	s.buildView(http.NotFound)
+
+	idx, total := s.mrs.CursorInfo()
+
+	s.Require().Equal(0, idx)
+	s.Require().Equal(0, total)
+}
+
+func (s *MRsViewSuite) TestCursorInfo_NormalSelection() {
+	s.buildView(http.NotFound)
+	s.seedItems([]*models.MergeRequest{
+		{IID: 1, State: models.MRStateOpened},
+		{IID: 2, State: models.MRStateOpened},
+		{IID: 3, State: models.MRStateOpened},
+	})
+
+	s.mrs.mu.Lock()
+	s.mrs.cursor = 1
+	s.mrs.mu.Unlock()
+
+	idx, total := s.mrs.CursorInfo()
+
+	s.Require().Equal(2, idx)
+	s.Require().Equal(3, total)
+}
+
+func (s *MRsViewSuite) TestCursorInfo_CursorBeyondFiltered() {
+	s.buildView(http.NotFound)
+	s.seedItems([]*models.MergeRequest{{IID: 1, State: models.MRStateOpened}})
+
+	s.mrs.mu.Lock()
+	s.mrs.cursor = 5
+	s.mrs.mu.Unlock()
+
+	idx, total := s.mrs.CursorInfo()
+
+	s.Require().Equal(0, idx, "out-of-range cursor must yield zero index")
+	s.Require().Equal(1, total)
+}
+
+func (s *MRsViewSuite) TestFooterSnap_AllFieldsConsistentUnderOneLock() {
+	s.buildView(http.NotFound)
+	s.seedItems([]*models.MergeRequest{
+		{IID: 10, State: models.MRStateOpened},
+		{IID: 11, State: models.MRStateOpened},
+	})
+	s.mrs.mu.Lock()
+	s.mrs.cursor = 1
+	s.mrs.lastSync = time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+	s.mrs.mu.Unlock()
+
+	snap := s.mrs.FooterSnap()
+
+	s.Require().NotNil(snap.Project)
+	s.Require().Equal("grp/alpha", snap.Project.PathWithNamespace)
+	s.Require().NotNil(snap.Selected)
+	s.Require().Equal(11, snap.Selected.IID)
+	s.Require().Equal(2, snap.Index)
+	s.Require().Equal(2, snap.Total)
+	s.Require().Equal(time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC), snap.LastSync)
 }
 
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; parallel runs race.

@@ -178,7 +178,7 @@ func (s *ReposRenderSuite) TestToggleFavourite_PersistsToConfigYAML() {
 	s.Require().NoError(s.v.Repos.LoadSync(context.Background()))
 
 	s.Require().NoError(s.dispatch(keymap.ViewRepos, 'j'))
-	s.Require().NoError(s.dispatch(keymap.ViewRepos, 't'))
+	s.Require().NoError(s.dispatch(keymap.ViewRepos, 'f'))
 
 	reloaded, err := config.Load(s.fs, reposCfgPath)
 	s.Require().NoError(err)

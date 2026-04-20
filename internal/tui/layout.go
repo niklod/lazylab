@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"time"
 
 	// gocui wraps ErrUnknownView via github.com/go-errors/errors v1.0.2, which
 	// predates Go 1.13's Unwrap() interface — so stdlib errors.Is returns false.
@@ -14,28 +15,47 @@ import (
 	"github.com/niklod/lazylab/internal/tui/views"
 )
 
-const searchPaneHeight = 3
+const (
+	searchPaneHeight = 3
+	// footerHeight is the outer row count reserved at the bottom of the
+	// screen for the global FooterView. gocui's InnerHeight = outer - 2
+	// (see view.go:534 — "if it doesn't [have a frame], the view is made
+	// 1 larger on all sides"), so for two rendered lines (meta +
+	// keybinds, per design/wireframes/layout.js:60-62) the outer height
+	// must be 4.
+	footerHeight = 4
+)
 
 type rect struct {
 	x0, y0, x1, y1 int
 }
 
 type paneLayout struct {
-	repos, mrs, detail rect
+	repos, mrs, detail, footer rect
 }
 
 // paneRects computes the 3-pane rectangles for a terminal of the given size.
 // Left column is 40% wide; inside it, repos occupies the top half and mrs the bottom.
 // Right column (detail) occupies the remaining 60% full-height.
+// The bottom footerHeight rows are reserved for the global FooterView and
+// subtracted from every pane's y1 so the content never overlaps the strip.
 // Returned by value to avoid a per-tick heap allocation.
 func paneRects(maxX, maxY int) paneLayout {
 	leftW := maxX * 40 / 100
-	topH := maxY / 2
+	panesBottom := maxY - footerHeight
+	if panesBottom < 2 {
+		// Terminal shorter than the footer itself — let panes fall back to
+		// the full viewport; footer rect will collapse and manageFooter
+		// no-ops via its size guard.
+		panesBottom = maxY
+	}
+	topH := panesBottom / 2
 
 	return paneLayout{
 		repos:  rect{0, 0, leftW, topH},
-		mrs:    rect{0, topH, leftW, maxY},
-		detail: rect{leftW, 0, maxX, maxY},
+		mrs:    rect{0, topH, leftW, panesBottom},
+		detail: rect{leftW, 0, maxX, panesBottom},
+		footer: rect{0, panesBottom, maxX, maxY},
 	}
 }
 
@@ -117,6 +137,16 @@ func renderPanes(g *gocui.Gui, v *views.Views) error {
 			return err
 		}
 		if err := applyPendingDetailFocus(g, v); err != nil {
+			return err
+		}
+	}
+	if v != nil && v.ActionsModal != nil {
+		if err := manageMRActionsModal(g, v, maxX, maxY); err != nil {
+			return err
+		}
+	}
+	if v != nil && v.Footer != nil {
+		if err := manageFooter(g, v, r.footer); err != nil {
 			return err
 		}
 	}
@@ -279,6 +309,129 @@ func manageConversationSubpane(g *gocui.Gui, v *views.Views, detail rect) error 
 	}
 
 	return nil
+}
+
+// manageMRActionsModal mounts a centered confirmation sub-pane on top of
+// the 3-pane frame when v.ActionsModal.IsActive(), removes it otherwise.
+// Height depends on kind (close is tighter than merge). Focus handling is
+// owned by the FocusOrder override in views.Views — this function only
+// deals with geometry and painting. Mount happens AFTER all other
+// sub-panes so the modal sits on top of them in z-order.
+func manageMRActionsModal(g *gocui.Gui, v *views.Views, maxX, maxY int) error {
+	if !v.ActionsModal.IsActive() {
+		return deleteViewIfPresent(g, keymap.ViewMRActionsModal)
+	}
+
+	h := views.ModalCloseHeight
+	if v.ActionsModal.Kind() == views.ModalMerge {
+		h = views.ModalMergeHeight
+	}
+	w := views.ModalWidth
+	if w > maxX-4 {
+		w = maxX - 4
+	}
+	if h > maxY-4 {
+		h = maxY - 4
+	}
+	if w < 10 || h < 4 {
+		return nil
+	}
+
+	x0 := (maxX - w) / 2
+	y0 := (maxY - h) / 2
+	r := rect{x0: x0, y0: y0, x1: x0 + w, y1: y0 + h}
+
+	title := v.ActionsModal.Title()
+	if err := mountSubpane(g, keymap.ViewMRActionsModal, r, func(pv *gocui.View) {
+		pv.Frame = true
+		pv.Wrap = false
+		pv.Title = title
+		pv.FrameColor = theme.ColorAccent
+		pv.TitleColor = theme.ColorAccent
+	}); err != nil {
+		return err
+	}
+
+	pv, err := g.View(keymap.ViewMRActionsModal)
+	if err != nil {
+		// The pane was just mounted above; g.View failing here would be
+		// a gocui invariant break. Swallowing to nil would hide real
+		// bugs, so surface the error wrapped.
+		return fmt.Errorf("fetch mr action modal pane: %w", err)
+	}
+	// Title can change kind-to-kind (re-Open with different kind). Re-apply
+	// each tick so the border tracks the active kind. Cheap.
+	pv.Title = title
+	pv.FrameColor = theme.ColorAccent
+	pv.TitleColor = theme.ColorAccent
+
+	v.ActionsModal.Render(pv)
+
+	return nil
+}
+
+// manageFooter mounts the global two-line footer (keybind strip + meta
+// breadcrumb) pinned to the bottom of the terminal. Always mounted — never
+// hidden — because the wireframe (design/wireframes/layout.js:60-62)
+// treats the strip as a persistent discovery surface. Modal overlays sit
+// above it; the hint line switches to the modal's hints via FooterState.
+func manageFooter(g *gocui.Gui, v *views.Views, r rect) error {
+	if r.y1-r.y0 < footerHeight || r.x1-r.x0 < 10 {
+		return deleteViewIfPresent(g, keymap.ViewFooter)
+	}
+
+	if err := mountSubpane(g, keymap.ViewFooter, r, func(pv *gocui.View) {
+		pv.Frame = false
+		pv.Wrap = false
+	}); err != nil {
+		return err
+	}
+
+	pv, err := g.View(keymap.ViewFooter)
+	if err != nil {
+		return fmt.Errorf("fetch footer pane: %w", err)
+	}
+
+	v.Footer.Render(pv, buildFooterState(g, v))
+
+	return nil
+}
+
+// buildFooterState snapshots every input FooterView consumes so Render
+// remains pure. Reads happen on the layout goroutine — all cross-view
+// lookups use existing public accessors that own their own locks.
+func buildFooterState(g *gocui.Gui, v *views.Views) views.FooterState {
+	st := views.FooterState{
+		FocusedView: currentViewName(g),
+		Now:         time.Now(),
+	}
+
+	if v.MRs != nil {
+		snap := v.MRs.FooterSnap()
+		if snap.Project != nil {
+			st.RepoPath = snap.Project.PathWithNamespace
+		}
+		if snap.Selected != nil {
+			st.MRIID = snap.Selected.IID
+		}
+		st.MRIndex = snap.Index
+		st.MRTotal = snap.Total
+		st.LastSync = snap.LastSync
+	}
+	if v.Repos != nil && st.RepoPath == "" {
+		if p := v.Repos.SelectedProject(); p != nil {
+			st.RepoPath = p.PathWithNamespace
+		}
+	}
+	st.SearchActive = (v.Repos != nil && v.Repos.SearchActive()) ||
+		(v.MRs != nil && v.MRs.SearchActive())
+	if v.ActionsModal != nil {
+		snap := v.ActionsModal.Snapshot()
+		st.ModalActive = snap.Active
+		st.ModalKind = snap.Kind
+	}
+
+	return st
 }
 
 func mountSubpane(g *gocui.Gui, name string, r rect, onCreate func(*gocui.View)) error {
