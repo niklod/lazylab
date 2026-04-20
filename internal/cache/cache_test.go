@@ -243,7 +243,7 @@ func (s *CacheSuite) TestInvalidateMR_ClearsAllMRNamespaces() {
 	loader := func(ctx context.Context) (string, error) { return "x", nil }
 
 	namespaces := []string{
-		"mr_list", "mr", "mr_approvals", "mr_discussions",
+		"mr_list", "mr", "mr_approvals", "mr_discussions", "mr_conversation",
 		"mr_changes", "pipeline_latest", "pipeline_detail",
 	}
 	for _, ns := range namespaces {

@@ -16,6 +16,7 @@ const (
 	ViewDetailDiffContent    = "detail_diff_content"
 	ViewDetailPipelineStages = "detail_pipeline_stages"
 	ViewDetailPipelineJobLog = "detail_pipeline_job_log"
+	ViewDetailConversation   = "detail_conversation"
 )
 
 // HandlerFunc matches gocui's keybinding handler signature.

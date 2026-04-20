@@ -84,6 +84,8 @@ func (v *Views) FocusOrder() []string {
 		}
 
 		return []string{keymap.ViewRepos, keymap.ViewMRs, child}
+	case DetailTabConversation:
+		return []string{keymap.ViewRepos, keymap.ViewMRs, keymap.ViewDetailConversation}
 	}
 
 	return base
@@ -101,6 +103,7 @@ func (v *Views) detailBindings() []keymap.Binding {
 		keymap.ViewDetailDiffContent,
 		keymap.ViewDetailPipelineStages,
 		keymap.ViewDetailPipelineJobLog,
+		keymap.ViewDetailConversation,
 	}
 
 	var out []keymap.Binding
@@ -122,8 +125,92 @@ func (v *Views) detailBindings() []keymap.Binding {
 	out = append(out, v.diffContentBindings()...)
 	out = append(out, v.pipelineStagesBindings()...)
 	out = append(out, v.pipelineJobLogBindings()...)
+	out = append(out, v.conversationBindings()...)
 
 	return out
+}
+
+func (v *Views) conversationBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{View: keymap.ViewDetailConversation, Key: 'j', Handler: v.conversationMoveThread(1)},
+		{View: keymap.ViewDetailConversation, Key: 'k', Handler: v.conversationMoveThread(-1)},
+		{View: keymap.ViewDetailConversation, Key: gocui.KeyArrowDown, Handler: v.conversationMoveThread(1)},
+		{View: keymap.ViewDetailConversation, Key: gocui.KeyArrowUp, Handler: v.conversationMoveThread(-1)},
+		{View: keymap.ViewDetailConversation, Key: 'J', Handler: v.conversationMoveNote(1)},
+		{View: keymap.ViewDetailConversation, Key: 'K', Handler: v.conversationMoveNote(-1)},
+		{View: keymap.ViewDetailConversation, Key: 'g', Handler: v.conversationMoveToStart},
+		{View: keymap.ViewDetailConversation, Key: 'G', Handler: v.conversationMoveToEnd},
+		{View: keymap.ViewDetailConversation, Key: 'e', Handler: v.conversationToggleExpandUnderCursor},
+		{View: keymap.ViewDetailConversation, Key: 'E', Handler: v.conversationToggleExpandAll},
+		// `r` (toggle resolve) and `c` (new comment) are shown in the keybind
+		// strip for visual parity with design/wireframes/conversation.js but
+		// require mutation endpoints — wired no-op here, real handlers land
+		// with Phase G5 (MR Actions).
+		{View: keymap.ViewDetailConversation, Key: 'r', Handler: v.conversationNoop},
+		{View: keymap.ViewDetailConversation, Key: 'c', Handler: v.conversationNoop},
+	}
+}
+
+func (v *Views) conversationMoveThread(delta int) keymap.HandlerFunc {
+	return func(_ *gocui.Gui, _ *gocui.View) error {
+		if v.Detail == nil || v.Detail.Conversation() == nil {
+			return nil
+		}
+		v.Detail.Conversation().MoveThreadCursor(delta)
+
+		return nil
+	}
+}
+
+func (v *Views) conversationMoveNote(delta int) keymap.HandlerFunc {
+	return func(_ *gocui.Gui, _ *gocui.View) error {
+		if v.Detail == nil || v.Detail.Conversation() == nil {
+			return nil
+		}
+		v.Detail.Conversation().MoveNoteCursor(delta)
+
+		return nil
+	}
+}
+
+func (v *Views) conversationMoveToStart(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil || v.Detail.Conversation() == nil {
+		return nil
+	}
+	v.Detail.Conversation().MoveToStart()
+
+	return nil
+}
+
+func (v *Views) conversationMoveToEnd(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil || v.Detail.Conversation() == nil {
+		return nil
+	}
+	v.Detail.Conversation().MoveToEnd()
+
+	return nil
+}
+
+func (v *Views) conversationToggleExpandUnderCursor(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil || v.Detail.Conversation() == nil {
+		return nil
+	}
+	v.Detail.Conversation().ToggleExpandResolvedUnderCursor()
+
+	return nil
+}
+
+func (v *Views) conversationToggleExpandAll(_ *gocui.Gui, _ *gocui.View) error {
+	if v.Detail == nil || v.Detail.Conversation() == nil {
+		return nil
+	}
+	v.Detail.Conversation().ToggleExpandAllResolved()
+
+	return nil
+}
+
+func (v *Views) conversationNoop(_ *gocui.Gui, _ *gocui.View) error {
+	return nil
 }
 
 func (v *Views) diffTreeBindings() []keymap.Binding {

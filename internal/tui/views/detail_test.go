@@ -419,12 +419,13 @@ func (s *DetailViewSuite) TestSetTab_RendersActiveTabLabel() {
 	s.Require().Contains(buf, "Overview")
 }
 
-func (s *DetailViewSuite) TestSetTab_ConversationStillShowsStub() {
+func (s *DetailViewSuite) TestSetTab_ConversationShowsLoadingHintUntilDataArrives() {
 	s.detail.SetMR(nil, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
 
 	s.detail.SetTab(DetailTabConversation, nil)
-	s.detail.Render(s.pane())
-	s.Require().Contains(s.pane().Buffer(), detailConversationStub)
+
+	conv := s.detail.Conversation()
+	s.Require().NotNil(conv)
 }
 
 func (s *DetailViewSuite) TestSetTabSync_FetchesDiffAndPopulatesTree() {
@@ -784,7 +785,7 @@ func (s *DetailViewSuite) TestConsumePendingFocus_IsIdempotent() {
 func (s *DetailViewSuite) TestFocusTargetForTab_TabletoPane() {
 	s.Require().Equal(keymap.ViewDetail, focusTargetForTab(DetailTabOverview))
 	s.Require().Equal(keymap.ViewDetailDiffTree, focusTargetForTab(DetailTabDiff))
-	s.Require().Equal(keymap.ViewDetail, focusTargetForTab(DetailTabConversation))
+	s.Require().Equal(keymap.ViewDetailConversation, focusTargetForTab(DetailTabConversation))
 	s.Require().Equal(keymap.ViewDetailPipelineStages, focusTargetForTab(DetailTabPipeline))
 }
 
@@ -1044,13 +1045,123 @@ func (s *DetailViewSuite) TestSetTab_LeavingPipeline_ResetsLogStateAndPointsFocu
 
 	s.Require().False(s.detail.LogOpen(),
 		"leaving Pipeline with log open must reset log state")
-	s.Require().Equal(keymap.ViewDetail, s.detail.ConsumePendingFocus(),
+	s.Require().Equal(keymap.ViewDetailConversation, s.detail.ConsumePendingFocus(),
 		"focus points at Conversation pane, not the now-defunct log")
 	s.Require().Nil(s.detail.JobLog().CurrentJob())
 
 	s.detail.SetTab(DetailTabPipeline, project)
 	s.Require().Equal(keymap.ViewDetailPipelineStages, s.detail.ConsumePendingFocus(),
 		"re-entering Pipeline always lands on the stages pane")
+}
+
+func (s *DetailViewSuite) conversationHandler(discussionsJSON string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/discussions"):
+			_, _ = fmt.Fprint(w, discussionsJSON)
+		case strings.Contains(r.URL.Path, "/approvals"):
+			_, _ = fmt.Fprint(w, `{"approved":true,"approvals_required":0,"approvals_left":0}`)
+		default:
+			_, _ = fmt.Fprint(w, `[]`)
+		}
+	}
+}
+
+func (s *DetailViewSuite) TestSetTabSync_Conversation_FetchesAndPopulatesView() {
+	s.buildAppWithHandler(s.conversationHandler(`[
+		{"id":"d1","notes":[{"id":1,"body":"hi","author":{"username":"a","name":"A"},"resolvable":true,"resolved":false}]},
+		{"id":"d2","notes":[{"id":2,"body":"done","author":{"username":"b","name":"B"},"resolvable":true,"resolved":true,"resolved_by":{"id":1,"username":"a","name":"A"}}]}
+	]`))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(project, mr)
+
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabConversation, project))
+
+	s.Require().Equal(DetailTabConversation, s.detail.CurrentTab())
+	conv := s.detail.Conversation()
+	s.Require().NotNil(conv)
+	s.Require().Equal(2, conv.ThreadCount())
+	s.Require().Equal(1, conv.UnresolvedCount())
+}
+
+func (s *DetailViewSuite) TestSetTabSync_Conversation_EmptyDiscussions() {
+	s.buildAppWithHandler(s.conversationHandler(`[]`))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(project, mr)
+
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabConversation, project))
+
+	s.Require().Equal(0, s.detail.Conversation().ThreadCount())
+}
+
+func (s *DetailViewSuite) TestSetTabSync_Conversation_UpstreamErrorWrapped() {
+	s.buildAppWithHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"nope"}`)
+	})
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	mr := &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened}
+	s.detail.SetMR(project, mr)
+
+	err := s.detail.SetTabSync(context.Background(), DetailTabConversation, project)
+
+	s.Require().Error(err)
+	s.Require().ErrorContains(err, "fetch mr discussions")
+}
+
+func (s *DetailViewSuite) TestApplyConversation_StaleSeqIgnored() {
+	s.detail.SetMR(nil, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
+
+	s.detail.applyConversation(0, []*models.Discussion{{ID: "x", Notes: []models.Note{{ID: 1, Resolvable: true, Author: models.User{Username: "u"}}}}}, nil)
+
+	s.Require().Equal(0, s.detail.Conversation().ThreadCount(),
+		"stale seq must not clobber current state")
+}
+
+func (s *DetailViewSuite) TestSetMR_Conversation_ResetsState() {
+	s.buildAppWithHandler(s.conversationHandler(`[
+		{"id":"d1","notes":[{"id":1,"body":"hi","author":{"username":"a","name":"A"},"resolvable":true}]}
+	]`))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+	s.detail.SetMR(project, &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened})
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabConversation, project))
+	s.Require().Positive(s.detail.Conversation().ThreadCount())
+
+	s.detail.SetMR(project, &models.MergeRequest{IID: 6, Title: "U", State: models.MRStateOpened})
+
+	s.Require().Equal(0, s.detail.Conversation().ThreadCount(),
+		"conversation data cleared on MR swap")
+}
+
+func (s *DetailViewSuite) TestSetMR_SwapWhileOnConversationTab_RefetchesData() {
+	s.buildAppWithHandler(s.conversationHandler(`[
+		{"id":"d1","notes":[{"id":1,"body":"hi","author":{"username":"a","name":"A"},"resolvable":true}]}
+	]`))
+	project := &models.Project{ID: 11, PathWithNamespace: "grp/x"}
+
+	s.detail.SetMR(project, &models.MergeRequest{IID: 5, Title: "T", State: models.MRStateOpened})
+	s.Require().NoError(s.detail.SetTabSync(context.Background(), DetailTabConversation, project))
+	s.Require().Positive(s.detail.Conversation().ThreadCount())
+
+	s.Require().NoError(s.detail.SetMRSync(context.Background(), project,
+		&models.MergeRequest{IID: 6, Title: "U", State: models.MRStateOpened}))
+
+	s.Require().Equal(DetailTabConversation, s.detail.CurrentTab(),
+		"tab is preserved across MR swap")
+	s.Require().Positive(s.detail.Conversation().ThreadCount(),
+		"data must reload when swapping MRs while sitting on Conversation tab; "+
+			"otherwise the pane is stuck on the Loading… hint forever")
+}
+
+func (s *DetailViewSuite) TestSetTab_Conversation_PendingFocusPointsAtConversationPane() {
+	s.detail.SetMR(nil, &models.MergeRequest{IID: 1, Title: "T", State: models.MRStateOpened})
+
+	s.detail.SetTab(DetailTabConversation, nil)
+
+	s.Require().Equal(keymap.ViewDetailConversation, s.detail.ConsumePendingFocus())
 }
 
 //nolint:paralleltest // gocui stores tcell simulation screen in a global; parallel runs race.

@@ -29,9 +29,8 @@ const (
 	detailKeyWidth = 12
 	detailDescRule = "─────────────────────────────────────────────────────────────────────────"
 
-	detailDiffLoading      = "Loading diff…"
-	detailDiffEmpty        = "No files changed in this merge request."
-	detailConversationStub = "Conversation tab — not yet implemented."
+	detailDiffLoading = "Loading diff…"
+	detailDiffEmpty   = "No files changed in this merge request."
 )
 
 var (
@@ -115,6 +114,10 @@ type DetailView struct {
 	pipelineRefresh    pipelineRefreshState
 	pipelineRefreshCtl *pipelineRefreshCtl
 
+	conversation     *ConversationView
+	conversationData []*models.Discussion
+	conversationSeq  uint64
+
 	clip clipboard.Clipboard
 }
 
@@ -126,6 +129,7 @@ func NewDetail(g *gocui.Gui, app *appcontext.AppContext) *DetailView {
 		diffContent:    NewDiffContent(),
 		pipelineStages: NewPipelineStages(),
 		jobLog:         NewJobLog(),
+		conversation:   NewConversation(),
 		tabBar:         renderTabBar(DetailTabOverview),
 		pipelineRefresh: pipelineRefreshState{
 			enabled:  true,
@@ -176,6 +180,14 @@ func (d *DetailView) SetMR(project *models.Project, mr *models.MergeRequest) {
 	// Overview also surfaces the pipeline status, so prefetch here and let
 	// cache.Do dedupe when the user later opens the Pipeline tab.
 	d.fetchPipelineAsync(context.Background(), project, mr)
+	// Conversation does NOT prefetch on every SetMR (no Overview consumer),
+	// but if the user is already sitting on the Conversation tab when they
+	// swap MRs, commitMR flipped the widget back to "Loading…" and nothing
+	// else would refetch — SetTab only fires on tab transitions. Kick the
+	// fetch here so the pane reloads instead of stalling on the loading hint.
+	if d.CurrentTab() == DetailTabConversation {
+		d.fetchConversationAsync(context.Background(), project, mr)
+	}
 }
 
 // SetMRSync applies an MR and fetches stats inline. Test-only entry point
@@ -205,6 +217,15 @@ func (d *DetailView) SetMRSync(ctx context.Context, project *models.Project, mr 
 	d.applyPipeline(pipelineSeq, pipeline, err)
 	if err != nil {
 		return fmt.Errorf("detail: fetch mr pipeline: %w", err)
+	}
+
+	if d.CurrentTab() == DetailTabConversation {
+		seq := d.beginConversationLoad()
+		data, err := d.app.GitLab.ListMRDiscussions(ctx, projectID, iid)
+		d.applyConversation(seq, data, err)
+		if err != nil {
+			return fmt.Errorf("detail: fetch mr discussions: %w", err)
+		}
 	}
 
 	return nil
@@ -317,6 +338,9 @@ func (d *DetailView) SetTab(tab DetailTab, project *models.Project) {
 		d.fetchPipelineAsync(context.Background(), project, mr)
 		d.startPipelineRefresh(project, mr)
 	}
+	if tab == DetailTabConversation && prev != DetailTabConversation && mr != nil {
+		d.fetchConversationAsync(context.Background(), project, mr)
+	}
 	if prev == DetailTabPipeline && tab != DetailTabPipeline {
 		d.mu.Lock()
 		d.stopPipelineRefreshLocked()
@@ -366,6 +390,15 @@ func (d *DetailView) SetTabSync(ctx context.Context, tab DetailTab, project *mod
 		d.applyPipeline(seq, detail, err)
 		if err != nil {
 			return fmt.Errorf("detail: fetch mr pipeline: %w", err)
+		}
+	}
+
+	if tab == DetailTabConversation && prev != DetailTabConversation {
+		seq := d.beginConversationLoad()
+		data, err := d.app.GitLab.ListMRDiscussions(ctx, projectID, mr.IID)
+		d.applyConversation(seq, data, err)
+		if err != nil {
+			return fmt.Errorf("detail: fetch mr discussions: %w", err)
 		}
 	}
 
@@ -421,7 +454,6 @@ func (d *DetailView) Render(pane *gocui.View) {
 		pane.WriteString(d.cached)
 	case DetailTabDiff:
 	case DetailTabConversation:
-		pane.WriteString(detailConversationStub + "\n")
 	case DetailTabPipeline:
 	}
 }
@@ -498,6 +530,12 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 	d.logErr = nil
 	if d.jobLog != nil {
 		d.jobLog.SetJob(nil, "")
+	}
+
+	d.conversationSeq++
+	d.conversationData = nil
+	if d.conversation != nil {
+		d.conversation.ShowLoading()
 	}
 
 	d.cached = d.renderOverviewLocked()
@@ -832,6 +870,8 @@ func focusTargetForTab(tab DetailTab) string {
 		return keymap.ViewDetailDiffTree
 	case DetailTabPipeline:
 		return keymap.ViewDetailPipelineStages
+	case DetailTabConversation:
+		return keymap.ViewDetailConversation
 	}
 
 	return keymap.ViewDetail

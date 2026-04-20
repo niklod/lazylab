@@ -12,6 +12,7 @@ const (
 	ViewDetailDiffContent    = keymap.ViewDetailDiffContent
 	ViewDetailPipelineStages = keymap.ViewDetailPipelineStages
 	ViewDetailPipelineJobLog = keymap.ViewDetailPipelineJobLog
+	ViewDetailConversation   = keymap.ViewDetailConversation
 )
 
 // focusOrder is the baseline focus-cycle order (Overview tab — detail pane is
@@ -42,7 +43,8 @@ func detailFamily(name string) bool {
 	switch name {
 	case ViewDetail,
 		ViewDetailDiffTree, ViewDetailDiffContent,
-		ViewDetailPipelineStages, ViewDetailPipelineJobLog:
+		ViewDetailPipelineStages, ViewDetailPipelineJobLog,
+		ViewDetailConversation:
 		return true
 	}
 

@@ -113,6 +113,9 @@ func renderPanes(g *gocui.Gui, v *views.Views) error {
 		if err := managePipelineSubpanes(g, v, r.detail); err != nil {
 			return err
 		}
+		if err := manageConversationSubpane(g, v, r.detail); err != nil {
+			return err
+		}
 		if err := applyPendingDetailFocus(g, v); err != nil {
 			return err
 		}
@@ -238,6 +241,41 @@ func managePipelineSubpanes(g *gocui.Gui, v *views.Views, detail rect) error {
 	}
 	if pv, err := g.View(keymap.ViewDetailPipelineStages); err == nil && v.Detail.PipelineStages() != nil {
 		v.Detail.PipelineStages().Render(pv)
+	}
+
+	return nil
+}
+
+// manageConversationSubpane mounts a single pane inside the detail rect
+// when the Conversation tab is active; removes it otherwise. No mode toggle
+// (unlike managePipelineSubpanes) — the conversation view is a plain list.
+func manageConversationSubpane(g *gocui.Gui, v *views.Views, detail rect) error {
+	active := v.Detail != nil && v.Detail.CurrentTab() == views.DetailTabConversation
+	if !active {
+		return deleteViewIfPresent(g, keymap.ViewDetailConversation)
+	}
+
+	inner := rect{
+		x0: detail.x0 + 1,
+		y0: detail.y0 + 2,
+		x1: detail.x1 - 1,
+		y1: detail.y1 - 1,
+	}
+	if inner.x1-inner.x0 < 10 || inner.y1-inner.y0 < 3 {
+		return nil
+	}
+
+	if err := mountSubpane(g, keymap.ViewDetailConversation, inner, func(pv *gocui.View) {
+		pv.Frame = false
+		// Wrap is done manually at the view level — gocui's built-in
+		// soft-wrap would start each continuation line at column 0,
+		// losing the spine/indent alignment for note bodies.
+		pv.Wrap = false
+	}); err != nil {
+		return err
+	}
+	if pv, err := g.View(keymap.ViewDetailConversation); err == nil && v.Detail.Conversation() != nil {
+		v.Detail.Conversation().Render(pv)
 	}
 
 	return nil

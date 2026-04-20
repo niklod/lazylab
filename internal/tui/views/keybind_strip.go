@@ -15,6 +15,7 @@ type keybindMode int
 const (
 	keybindModePipelineStages keybindMode = iota
 	keybindModePipelineLog
+	keybindModeConversation
 )
 
 // keybindHint is one `<key> <label>` pair in the strip. Keys are painted in
@@ -47,6 +48,15 @@ func renderKeybindStrip(mode keybindMode) string {
 			{"y", "copy"},
 			{"r", "retry"},
 			{"Esc", "close"},
+		}
+	case keybindModeConversation:
+		hints = []keybindHint{
+			{"j/k", "thread"},
+			{"J/K", "note"},
+			{"e", "expand"},
+			{"E", "expand all"},
+			{"c", "new comment"},
+			{"r", "toggle resolve"},
 		}
 	}
 

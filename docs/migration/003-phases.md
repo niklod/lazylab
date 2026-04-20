@@ -36,11 +36,11 @@ Tasks for each phase live in `../../tasks.md` under the "Go Rewrite" section. Ev
 
 - Overview tab: author, date, status, branches, conflicts, comment count — **done**.
 - Diff tab: file tree + side-by-side diff (port ADR 003 approach) — **done** (ADR 013).
-- Conversation tab: threaded discussions — pending.
+- Conversation tab: threaded thread cards with two-level cursor (j/k thread, J/K note), resolved collapse/expand, general-comments section — **done** (ADR 019).
 - Pipeline tab: flat stages listing + inline job log (Enter opens, Esc closes) — **done** (ADR 014).
 - Tab switching with `[` / `]` — **done**.
 
-**Parity gate:** all four tabs render with real data; job log open/close works. Conversation pending closes the gate.
+**Parity gate:** all four tabs render with real data; job log open/close works; conversation threading + resolve status visible. Gate closed.
 
 ## Phase G5 — MR Actions
 
