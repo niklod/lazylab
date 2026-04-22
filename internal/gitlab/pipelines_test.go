@@ -243,6 +243,42 @@ func (s *PipelinesSuite) TestGetJobTrace_RejectsInvalidInput() {
 	s.Require().ErrorContains(err, "project id and job id required")
 }
 
+func (s *PipelinesSuite) TestGetJobTrace_CachedReusesOnSecondCall() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/jobs/99/trace") {
+			http.NotFound(w, r)
+
+			return
+		}
+		hits.Add(1)
+		_, _ = fmt.Fprint(w, "line 1\nline 2\n")
+	}))
+	s.T().Cleanup(srv.Close)
+
+	fs := afero.NewMemMapFs()
+	c := cache.New(config.CacheConfig{Directory: "/cache", TTL: 600}, fs)
+	s.T().Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = c.Shutdown(shutdownCtx)
+	})
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+		gitlab.WithCache(c),
+	)
+	s.Require().NoError(err)
+
+	_, err = client.GetJobTrace(context.Background(), 11, 99)
+	s.Require().NoError(err)
+	_, err = client.GetJobTrace(context.Background(), 11, 99)
+	s.Require().NoError(err)
+
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+}
+
 func (s *PipelinesSuite) TestGetMRPipelineDetail_CachedClient_Dedups() {
 	var pipelineHits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

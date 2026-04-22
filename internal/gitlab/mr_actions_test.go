@@ -41,6 +41,28 @@ type MRActionsSuite struct {
 	suite.Suite
 }
 
+// newCachedClient builds a gitlab.Client wired to an in-memory cache with a
+// long TTL (600s) so entries stay fresh for the whole test. Shutdown is
+// registered via T.Cleanup so callers don't have to thread the *cache.Cache.
+func (s *MRActionsSuite) newCachedClient(srv *httptest.Server) *gitlab.Client {
+	fs := afero.NewMemMapFs()
+	c := cache.New(config.CacheConfig{Directory: "/cache", TTL: 600}, fs)
+	s.T().Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = c.Shutdown(shutdownCtx)
+	})
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+		gitlab.WithCache(c),
+	)
+	s.Require().NoError(err)
+
+	return client
+}
+
 func (s *MRActionsSuite) TestCloseMergeRequest_SendsStateEventAndMapsResponse() {
 	var (
 		method string
@@ -120,23 +142,10 @@ func (s *MRActionsSuite) TestCloseMergeRequest_InvalidatesCache() {
 	}))
 	s.T().Cleanup(srv.Close)
 
-	fs := afero.NewMemMapFs()
-	c := cache.New(config.CacheConfig{Directory: "/cache", TTL: 600}, fs)
-	s.T().Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = c.Shutdown(shutdownCtx)
-	})
-
-	client, err := gitlab.New(
-		config.GitLabConfig{URL: srv.URL, Token: "secret"},
-		gitlab.WithHTTPClient(srv.Client()),
-		gitlab.WithCache(c),
-	)
-	s.Require().NoError(err)
+	client := s.newCachedClient(srv)
 
 	opts := gitlab.ListMergeRequestsOptions{ProjectID: 42, ProjectPath: "grp/x", State: models.MRStateFilterOpened}
-	_, err = client.ListMergeRequests(context.Background(), opts)
+	_, err := client.ListMergeRequests(context.Background(), opts)
 	s.Require().NoError(err)
 	s.Require().Equal(int32(1), hits.Load())
 
@@ -166,23 +175,10 @@ func (s *MRActionsSuite) TestAcceptMergeRequest_InvalidatesCache() {
 	}))
 	s.T().Cleanup(srv.Close)
 
-	fs := afero.NewMemMapFs()
-	c := cache.New(config.CacheConfig{Directory: "/cache", TTL: 600}, fs)
-	s.T().Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = c.Shutdown(shutdownCtx)
-	})
-
-	client, err := gitlab.New(
-		config.GitLabConfig{URL: srv.URL, Token: "secret"},
-		gitlab.WithHTTPClient(srv.Client()),
-		gitlab.WithCache(c),
-	)
-	s.Require().NoError(err)
+	client := s.newCachedClient(srv)
 
 	opts := gitlab.ListMergeRequestsOptions{ProjectID: 42, ProjectPath: "grp/x", State: models.MRStateFilterOpened}
-	_, err = client.ListMergeRequests(context.Background(), opts)
+	_, err := client.ListMergeRequests(context.Background(), opts)
 	s.Require().NoError(err)
 	_, err = client.ListMergeRequests(context.Background(), opts)
 	s.Require().NoError(err)
@@ -194,6 +190,202 @@ func (s *MRActionsSuite) TestAcceptMergeRequest_InvalidatesCache() {
 	_, err = client.ListMergeRequests(context.Background(), opts)
 	s.Require().NoError(err)
 	s.Require().Equal(int32(2), listHits.Load(), "accept must invalidate mr_list cache")
+}
+
+func (s *MRActionsSuite) TestCloseMergeRequest_InvalidatesMR() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge_requests/7"):
+			_, _ = fmt.Fprint(w, `{"id":1,"iid":7,"title":"X","state":"closed","author":{"id":1,"username":"a","name":"A","web_url":"u"},"source_branch":"s","target_branch":"main","web_url":"u"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/merge_requests/7"):
+			hits.Add(1)
+			_, _ = fmt.Fprint(w, `{"id":1,"iid":7,"title":"X","state":"opened","author":{"id":1,"username":"a","name":"A","web_url":"u"},"source_branch":"s","target_branch":"main","web_url":"u"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client := s.newCachedClient(srv)
+
+	_, err := client.GetMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+	_, err = client.GetMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+
+	_, err = client.CloseMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+
+	_, err = client.GetMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+	s.Require().Equal(int32(2), hits.Load(), "close must invalidate mr cache")
+}
+
+func (s *MRActionsSuite) TestCloseMergeRequest_InvalidatesApprovals() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge_requests/7"):
+			_, _ = fmt.Fprint(w, `{"id":1,"iid":7,"title":"X","state":"closed","author":{"id":1,"username":"a","name":"A","web_url":"u"},"source_branch":"s","target_branch":"main","web_url":"u"}`)
+		case strings.HasSuffix(r.URL.Path, "/merge_requests/7/approvals"):
+			hits.Add(1)
+			_, _ = fmt.Fprint(w, `{"approved":false,"approvals_required":1,"approvals_left":1,"approved_by":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client := s.newCachedClient(srv)
+
+	_, err := client.GetMRApprovals(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	_, err = client.GetMRApprovals(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+
+	_, err = client.CloseMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+
+	_, err = client.GetMRApprovals(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(2), hits.Load(), "close must invalidate mr_approvals cache")
+}
+
+func (s *MRActionsSuite) TestCloseMergeRequest_InvalidatesDiscussionStats() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge_requests/7"):
+			_, _ = fmt.Fprint(w, `{"id":1,"iid":7,"title":"X","state":"closed","author":{"id":1,"username":"a","name":"A","web_url":"u"},"source_branch":"s","target_branch":"main","web_url":"u"}`)
+		case strings.HasSuffix(r.URL.Path, "/merge_requests/7/discussions"):
+			hits.Add(1)
+			_, _ = fmt.Fprint(w, `[{"id":"d1","notes":[{"id":1,"resolvable":true,"resolved":true}]}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client := s.newCachedClient(srv)
+
+	_, err := client.GetMRDiscussionStats(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	_, err = client.GetMRDiscussionStats(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+
+	_, err = client.CloseMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+
+	_, err = client.GetMRDiscussionStats(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(2), hits.Load(), "close must invalidate mr_discussions cache")
+}
+
+func (s *MRActionsSuite) TestCloseMergeRequest_InvalidatesConversation() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge_requests/7"):
+			_, _ = fmt.Fprint(w, `{"id":1,"iid":7,"title":"X","state":"closed","author":{"id":1,"username":"a","name":"A","web_url":"u"},"source_branch":"s","target_branch":"main","web_url":"u"}`)
+		case strings.HasSuffix(r.URL.Path, "/merge_requests/7/discussions"):
+			hits.Add(1)
+			_, _ = fmt.Fprint(w, `[{"id":"d1","notes":[{"id":1,"body":"hi","author":{"id":1,"username":"a","name":"A","web_url":"u"},"resolvable":false}]}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client := s.newCachedClient(srv)
+
+	_, err := client.ListMRDiscussions(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	_, err = client.ListMRDiscussions(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+
+	_, err = client.CloseMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+
+	_, err = client.ListMRDiscussions(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(2), hits.Load(), "close must invalidate mr_conversation cache")
+}
+
+func (s *MRActionsSuite) TestCloseMergeRequest_InvalidatesChanges() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge_requests/7"):
+			_, _ = fmt.Fprint(w, `{"id":1,"iid":7,"title":"X","state":"closed","author":{"id":1,"username":"a","name":"A","web_url":"u"},"source_branch":"s","target_branch":"main","web_url":"u"}`)
+		case strings.HasSuffix(r.URL.Path, "/merge_requests/7/diffs"):
+			hits.Add(1)
+			_, _ = fmt.Fprint(w, `[{"old_path":"a","new_path":"a","diff":""}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client := s.newCachedClient(srv)
+
+	_, err := client.GetMRChanges(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	_, err = client.GetMRChanges(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+
+	_, err = client.CloseMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+
+	_, err = client.GetMRChanges(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(2), hits.Load(), "close must invalidate mr_changes cache")
+}
+
+func (s *MRActionsSuite) TestCloseMergeRequest_InvalidatesPipeline() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge_requests/7"):
+			_, _ = fmt.Fprint(w, `{"id":1,"iid":7,"title":"X","state":"closed","author":{"id":1,"username":"a","name":"A","web_url":"u"},"source_branch":"s","target_branch":"main","web_url":"u"}`)
+		case strings.Contains(r.URL.Path, "/merge_requests/7/pipelines"):
+			hits.Add(1)
+			_, _ = fmt.Fprint(w, `[{"id":77,"iid":1,"project_id":42,"status":"success","ref":"main","web_url":"u"}]`)
+		case strings.HasSuffix(r.URL.Path, "/pipelines/77"):
+			_, _ = fmt.Fprint(w, `{"id":77,"status":"success","ref":"main","sha":"deadbeef","web_url":"u"}`)
+		case strings.Contains(r.URL.Path, "/pipelines/77/jobs"):
+			_, _ = fmt.Fprint(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s.T().Cleanup(srv.Close)
+
+	client := s.newCachedClient(srv)
+
+	_, err := client.GetMRPipelineDetail(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	_, err = client.GetMRPipelineDetail(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+
+	_, err = client.CloseMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+
+	_, err = client.GetMRPipelineDetail(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	s.Require().Equal(int32(2), hits.Load(), "close must invalidate mr_pipeline cache")
 }
 
 func (s *MRActionsSuite) TestAcceptMergeRequest_SendsSquashAndDeleteBranch() {

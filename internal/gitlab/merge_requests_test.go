@@ -285,6 +285,38 @@ func (s *MergeRequestsSuite) TestGetMergeRequest_RejectsZeroIIDs() {
 	s.Require().Error(err)
 }
 
+func (s *MergeRequestsSuite) TestGetMergeRequest_CachedReusesOnSecondCall() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":1,"iid":7,"title":"X","state":"opened","author":{"id":1,"username":"a","name":"A","web_url":"u"},"source_branch":"s","target_branch":"main","web_url":"u"}`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	fs := afero.NewMemMapFs()
+	c := cache.New(config.CacheConfig{Directory: "/cache", TTL: 600}, fs)
+	s.T().Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = c.Shutdown(shutdownCtx)
+	})
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+		gitlab.WithCache(c),
+	)
+	s.Require().NoError(err)
+
+	_, err = client.GetMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+	_, err = client.GetMergeRequest(context.Background(), 42, 7, "grp/x")
+	s.Require().NoError(err)
+
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
+}
+
 func (s *MergeRequestsSuite) TestGetMRApprovals_MapsApprovedByUsers() {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +361,38 @@ func (s *MergeRequestsSuite) TestGetMRApprovals_WrapsUpstreamError() {
 
 	s.Require().Error(err)
 	s.Require().ErrorContains(err, "gitlab: get mr approvals")
+}
+
+func (s *MergeRequestsSuite) TestGetMRApprovals_CachedReusesOnSecondCall() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"approved":false,"approvals_required":1,"approvals_left":1,"approved_by":[]}`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	fs := afero.NewMemMapFs()
+	c := cache.New(config.CacheConfig{Directory: "/cache", TTL: 600}, fs)
+	s.T().Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = c.Shutdown(shutdownCtx)
+	})
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+		gitlab.WithCache(c),
+	)
+	s.Require().NoError(err)
+
+	_, err = client.GetMRApprovals(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	_, err = client.GetMRApprovals(context.Background(), 42, 7)
+	s.Require().NoError(err)
+
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
 }
 
 func (s *MergeRequestsSuite) TestGetMRDiscussionStats_AggregatesResolvableAndResolved() {
@@ -391,6 +455,38 @@ func (s *MergeRequestsSuite) TestGetMRDiscussionStats_ValidatesInputs() {
 
 	_, err = client.GetMRDiscussionStats(context.Background(), 1, 0)
 	s.Require().Error(err)
+}
+
+func (s *MergeRequestsSuite) TestGetMRDiscussionStats_CachedReusesOnSecondCall() {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[{"id":"d1","notes":[{"id":1,"resolvable":true,"resolved":true}]}]`)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	fs := afero.NewMemMapFs()
+	c := cache.New(config.CacheConfig{Directory: "/cache", TTL: 600}, fs)
+	s.T().Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = c.Shutdown(shutdownCtx)
+	})
+
+	client, err := gitlab.New(
+		config.GitLabConfig{URL: srv.URL, Token: "secret"},
+		gitlab.WithHTTPClient(srv.Client()),
+		gitlab.WithCache(c),
+	)
+	s.Require().NoError(err)
+
+	_, err = client.GetMRDiscussionStats(context.Background(), 42, 7)
+	s.Require().NoError(err)
+	_, err = client.GetMRDiscussionStats(context.Background(), 42, 7)
+	s.Require().NoError(err)
+
+	s.Require().Equal(int32(1), hits.Load(), "second fresh call skips HTTP")
 }
 
 func (s *MergeRequestsSuite) TestGetMRChanges_PaginatesAndMapsFiles() {
