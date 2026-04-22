@@ -23,6 +23,12 @@ type Views struct {
 	Detail       *DetailView
 	ActionsModal *MRActionModal
 	Footer       *FooterView
+
+	// actionOriginView remembers which pane opened the MR-action modal so
+	// focus can be parked back there on dismiss. Written only from keybind
+	// handlers (main gocui goroutine); read only from inside g.Update
+	// closures — no lock required.
+	actionOriginView string
 }
 
 func New(g *gocui.Gui, app *appcontext.AppContext) *Views {
@@ -146,32 +152,26 @@ func (v *Views) FocusOrder() []string {
 }
 
 // detailBindings produces the full per-view binding set for the Detail
-// pane and its Diff-tab sub-panes. `[` / `]` are duplicated across every
-// detail-family view because gocui dispatches by focused view name —
-// binding only on ViewDetail leaves the user stuck in the Diff tab.
+// pane and its tab sub-panes. `[`/`]` (tab cycle) and `x`/`M` (close/merge)
+// are duplicated across every detail-family view because gocui dispatches
+// by focused view name — binding only on ViewDetail leaves the user stuck
+// whenever a sub-pane is focused.
 func (v *Views) detailBindings() []keymap.Binding {
-	cycleKeys := []rune{'[', ']'}
-	detailFamily := []string{
-		keymap.ViewDetail,
-		keymap.ViewDetailDiffTree,
-		keymap.ViewDetailDiffContent,
-		keymap.ViewDetailPipelineStages,
-		keymap.ViewDetailPipelineJobLog,
-		keymap.ViewDetailConversation,
+	family := keymap.DetailFamily()
+	familyWide := []struct {
+		key     any
+		handler keymap.HandlerFunc
+	}{
+		{'[', v.cycleDetailTab(-1)},
+		{']', v.cycleDetailTab(+1)},
+		{'x', v.openCloseModal},
+		{'M', v.openMergeModal},
 	}
 
-	var out []keymap.Binding
-	for _, k := range cycleKeys {
-		for _, view := range detailFamily {
-			delta := 1
-			if k == '[' {
-				delta = -1
-			}
-			out = append(out, keymap.Binding{
-				View:    view,
-				Key:     k,
-				Handler: v.cycleDetailTab(delta),
-			})
+	out := make([]keymap.Binding, 0, len(family)*len(familyWide))
+	for _, view := range family {
+		for _, fw := range familyWide {
+			out = append(out, keymap.Binding{View: view, Key: fw.key, Handler: fw.handler})
 		}
 	}
 

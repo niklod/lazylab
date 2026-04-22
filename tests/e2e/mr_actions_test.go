@@ -532,6 +532,98 @@ func (s *MRActionsSuite) TestSetProject_ClearsTransientStatus() {
 	s.Require().Empty(s.v.MRs.TransientStatus(), "SetProject must clear the transient toast")
 }
 
+func (s *MRActionsSuite) selectMRIntoDetail() {
+	_, err := s.g.SetCurrentView(keymap.ViewMRs)
+	s.Require().NoError(err)
+	s.Require().NoError(s.dispatch(keymap.ViewMRs, gocui.KeyEnter))
+	s.Require().NoError(s.layoutTick())
+}
+
+func (s *MRActionsSuite) TestCloseFromOverviewPane_OpensModalWithCorrectMR() {
+	s.loadProjectAndMRs()
+	s.selectMRIntoDetail()
+
+	s.Require().NoError(s.dispatch(keymap.ViewDetail, 'x'))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().True(s.v.ActionsModal.IsActive(), "x from Overview must open the modal")
+	s.Require().Equal(views.ModalClose, s.v.ActionsModal.Kind())
+	s.Require().Contains(s.modalBuffer(), "Feature Alpha")
+	s.Require().Empty(s.mutations(), "opening the modal must not mutate")
+}
+
+func (s *MRActionsSuite) TestMergeFromPipelineTab_OpensModalWithBranches() {
+	s.loadProjectAndMRs()
+	s.selectMRIntoDetail()
+	project := s.v.Repos.SelectedProject()
+	s.Require().NotNil(project)
+	s.Require().NoError(s.v.Detail.SetTabSync(context.Background(), views.DetailTabPipeline, project))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().NoError(s.dispatch(keymap.ViewDetailPipelineStages, 'M'))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().True(s.v.ActionsModal.IsActive(), "M from Pipeline must open the modal")
+	s.Require().Equal(views.ModalMerge, s.v.ActionsModal.Kind())
+	buf := s.modalBuffer()
+	s.Require().Contains(buf, "feat/alpha", "merge modal must render source branch")
+	s.Require().Contains(buf, "main", "merge modal must render target branch")
+}
+
+func (s *MRActionsSuite) TestMergeFromConversationTab_OpensModal() {
+	s.loadProjectAndMRs()
+	s.selectMRIntoDetail()
+	project := s.v.Repos.SelectedProject()
+	s.Require().NotNil(project)
+	s.Require().NoError(s.v.Detail.SetTabSync(context.Background(), views.DetailTabConversation, project))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().NoError(s.dispatch(keymap.ViewDetailConversation, 'M'))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().True(s.v.ActionsModal.IsActive(), "M from Conversation must open the modal")
+	s.Require().Equal(views.ModalMerge, s.v.ActionsModal.Kind())
+}
+
+func (s *MRActionsSuite) TestCloseFromDetailPane_MergedMR_ShowsToastWithoutModal() {
+	merged := "merged"
+	s.mrState.Store(&merged)
+
+	s.loadProjectAndMRs()
+	s.selectMRIntoDetail()
+
+	s.Require().NoError(s.dispatch(keymap.ViewDetail, 'x'))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().False(s.v.ActionsModal.IsActive(), "merged MR must not open the modal")
+	status := s.v.MRs.TransientStatus()
+	s.Require().Contains(status, "Cannot close")
+	s.Require().Contains(status, "!10")
+	s.Require().Empty(s.mutations())
+}
+
+func (s *MRActionsSuite) TestCloseFromPipelinePane_ConfirmMutatesAndClosesModal() {
+	s.loadProjectAndMRs()
+	s.selectMRIntoDetail()
+	project := s.v.Repos.SelectedProject()
+	s.Require().NotNil(project)
+	s.Require().NoError(s.v.Detail.SetTabSync(context.Background(), views.DetailTabPipeline, project))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().NoError(s.dispatch(keymap.ViewDetailPipelineStages, 'x'))
+	s.Require().NoError(s.layoutTick())
+	s.Require().True(s.v.ActionsModal.IsActive())
+
+	s.confirmInlineClose()
+
+	muts := s.mutations()
+	s.Require().Len(muts, 1)
+	s.Require().Equal(http.MethodPut, muts[0].method)
+	s.Require().Equal("close", muts[0].body["state_event"])
+	s.Require().False(s.v.ActionsModal.IsActive())
+	s.Require().Equal("Closed !10", s.v.MRs.TransientStatus())
+}
+
 func (s *MRActionsSuite) TestMutationError_KeepsModalWithErrMsg() {
 	s.loadProjectAndMRs()
 

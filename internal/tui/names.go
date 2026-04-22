@@ -36,17 +36,9 @@ func SetFocusOrderProvider(fn func() []string) {
 	focusOrderFn = fn
 }
 
-// detailFamily reports whether name belongs to the detail pane cluster. The
-// parent detail frame highlights whenever any of its members is focused —
-// otherwise switching tabs would visually "lose" the frame.
-func detailFamily(name string) bool {
-	switch name {
-	case ViewDetail,
-		ViewDetailDiffTree, ViewDetailDiffContent,
-		ViewDetailPipelineStages, ViewDetailPipelineJobLog,
-		ViewDetailConversation:
-		return true
-	}
-
-	return false
-}
+// detailFamily delegates to keymap.IsDetailFamily — the authoritative list
+// lives in the keymap package so layout, views, and binding registration
+// share a single source of truth. The parent detail frame highlights
+// whenever any of its members is focused so tab switching never visually
+// "loses" the frame.
+func detailFamily(name string) bool { return keymap.IsDetailFamily(name) }

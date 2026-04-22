@@ -12,37 +12,46 @@ import (
 	"github.com/niklod/lazylab/internal/tui/keymap"
 )
 
-// openCloseModal handles the `x` key on the MRs pane. State-guards against
-// non-opened MRs (the modal only makes sense on opened state) and then
-// hands focus to the modal sub-pane.
+// openCloseModal handles the `x` key. Registered on the MRs pane and every
+// detail-family view so the user can close from anywhere the MR is in
+// context (Overview / Diff / Conversation / Pipeline / Log). State-guards
+// against non-opened MRs and hands focus to the modal sub-pane.
 //
 //nolint:contextcheck // gocui handler signature is fixed; actions use context.Background by design.
-func (v *Views) openCloseModal(g *gocui.Gui, _ *gocui.View) error {
-	return v.openMRActionModal(g, ModalClose, "close")
+func (v *Views) openCloseModal(g *gocui.Gui, source *gocui.View) error {
+	return v.openMRActionModal(g, source, ModalClose, "close")
 }
 
-// openMergeModal handles `M`. Same state guard as close.
+// openMergeModal handles `M`. Same guards as close, same multi-view
+// registration.
 //
 //nolint:contextcheck // gocui handler signature is fixed; actions use context.Background by design.
-func (v *Views) openMergeModal(g *gocui.Gui, _ *gocui.View) error {
-	return v.openMRActionModal(g, ModalMerge, "merge")
+func (v *Views) openMergeModal(g *gocui.Gui, source *gocui.View) error {
+	return v.openMRActionModal(g, source, ModalMerge, "merge")
 }
 
-func (v *Views) openMRActionModal(g *gocui.Gui, kind ModalKind, verb string) error {
+func (v *Views) openMRActionModal(g *gocui.Gui, source *gocui.View, kind ModalKind, verb string) error {
 	if v.MRs == nil || v.ActionsModal == nil {
 		return nil
 	}
-	mr := v.MRs.SelectedMR()
+	sourceName := ""
+	if source != nil {
+		sourceName = source.Name()
+	}
+	mr := v.resolveActionMR(sourceName)
 	if mr == nil {
 		return nil
 	}
 	if !mr.IsOpen() {
+		// Toast stays on the MRs pane regardless of origin — it owns the
+		// single transient-status strip in the footer area.
 		v.MRs.SetTransientStatus(fmt.Sprintf("Cannot %s: MR !%d is %s", verb, mr.IID, mr.State))
 
 		return nil
 	}
 
 	v.ActionsModal.Open(kind, mr)
+	v.actionOriginView = sourceName
 	if g == nil {
 		return nil
 	}
@@ -64,6 +73,22 @@ func (v *Views) openMRActionModal(g *gocui.Gui, kind ModalKind, verb string) err
 	})
 
 	return nil
+}
+
+// resolveActionMR picks the MR the action should operate on based on the
+// originating pane. Detail-family panes prefer the MR the user is looking at
+// (DetailView.CurrentMR) — the MRs-pane cursor may have drifted after the
+// user Entered detail and browsed a neighbour. MRs pane uses its own cursor.
+// Falls back to the MRs cursor if DetailView is empty so a stale detail view
+// cannot swallow the action.
+func (v *Views) resolveActionMR(sourceName string) *models.MergeRequest {
+	if keymap.IsDetailFamily(sourceName) && v.Detail != nil {
+		if mr := v.Detail.CurrentMR(); mr != nil {
+			return mr
+		}
+	}
+
+	return v.MRs.SelectedMR()
 }
 
 // confirmMRAction runs the mutation. Guarded by the modal's Busy flag so a
@@ -170,20 +195,41 @@ func (v *Views) finishMRAction(
 	v.triggerRedraw()
 }
 
-// restoreFocusAfterModal parks focus back on the MRs pane so the user can
-// keep navigating. Queued via g.Update because the modal pane is still
-// mounted until the next tick deletes it.
+// restoreFocusAfterModal parks focus back on the pane that opened the
+// modal, so a user who hit `M` from the Pipeline tab stays on Pipeline
+// after merge instead of getting yanked to the MRs list. Falls back to the
+// MRs pane when the origin pane no longer exists (e.g. the Log pane
+// auto-closed on tab switch, or the tab was cycled while the mutation was
+// in flight). Queued via g.Update because the modal pane is still mounted
+// until the next tick deletes it; the origin read + clear happens inside
+// the closure so the write in openMRActionModal and this read both run on
+// the main goroutine.
 func (v *Views) restoreFocusAfterModal() {
 	if v.g == nil {
 		return
 	}
 	v.g.Update(func(gg *gocui.Gui) error {
-		if _, err := gg.SetCurrentView(keymap.ViewMRs); err != nil {
+		target := v.focusRestoreTarget(gg)
+		v.actionOriginView = ""
+		if _, err := gg.SetCurrentView(target); err != nil {
 			return fmt.Errorf("restore focus after modal: %w", err)
 		}
 
 		return nil
 	})
+}
+
+// focusRestoreTarget picks the pane name that should receive focus after the
+// modal dismisses. Pure function over (v.actionOriginView, gg.View lookup)
+// so unit tests can exercise it without draining the gocui Update queue.
+func (v *Views) focusRestoreTarget(gg *gocui.Gui) string {
+	if origin := v.actionOriginView; origin != "" && gg != nil {
+		if _, err := gg.View(origin); err == nil {
+			return origin
+		}
+	}
+
+	return keymap.ViewMRs
 }
 
 // triggerRedraw asks gocui to repaint on the next tick after an async
