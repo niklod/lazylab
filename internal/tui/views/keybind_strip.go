@@ -37,7 +37,13 @@ type keybindHint struct {
 // active for mode. No Reset is appended to the tail — callers should add
 // their own newline and, if needed, wrap with a Reset.
 func renderKeybindStrip(mode keybindMode) string {
-	hints := hintsFor(mode)
+	return joinKeybindHints(hintsFor(mode))
+}
+
+// joinKeybindHints renders an arbitrary slice of hints using the same
+// accent-key / dim-label styling the global footer strip uses. Exposed to
+// the modal widget so the inline strip stays byte-identical to the footer.
+func joinKeybindHints(hints []keybindHint) string {
 	parts := make([]string, 0, len(hints))
 	for _, h := range hints {
 		parts = append(parts,

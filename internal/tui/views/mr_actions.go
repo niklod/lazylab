@@ -43,14 +43,13 @@ func (v *Views) openMRActionModal(g *gocui.Gui, source *gocui.View, kind ModalKi
 		return nil
 	}
 	if !mr.IsOpen() {
-		// Toast stays on the MRs pane regardless of origin — it owns the
-		// single transient-status strip in the footer area.
-		v.MRs.SetTransientStatus(fmt.Sprintf("Cannot %s: MR !%d is %s", verb, mr.IID, mr.State))
-
-		return nil
+		// Guard surfaces inside the modal itself — single feedback channel for
+		// every failure mode (guard + network). Modal opens locked so Enter
+		// is a no-op until the user presses Esc.
+		v.ActionsModal.OpenGuarded(kind, mr, fmt.Sprintf("Cannot %s: MR !%d is %s", verb, mr.IID, mr.State))
+	} else {
+		v.ActionsModal.Open(kind, mr)
 	}
-
-	v.ActionsModal.Open(kind, mr)
 	v.actionOriginView = sourceName
 	if g == nil {
 		return nil
@@ -100,7 +99,7 @@ func (v *Views) confirmMRAction(_ *gocui.Gui, _ *gocui.View) error {
 		return nil
 	}
 	snap := v.ActionsModal.Snapshot()
-	if !snap.Active || snap.MR == nil || snap.Busy {
+	if !snap.Active || snap.MR == nil || snap.Busy || snap.Locked {
 		return nil
 	}
 	project := v.currentProject()
@@ -140,37 +139,40 @@ func (v *Views) cancelMRAction(_ *gocui.Gui, _ *gocui.View) error {
 }
 
 func (v *Views) runCloseAction(ctx context.Context, project *models.Project, mr *models.MergeRequest) {
-	if v.app == nil || v.app.GitLab == nil {
-		// Unreachable in production (app wires the client at startup) but a
-		// unit test building a bare Views{} could hit this. Surface the
-		// failure instead of silently wedging the modal on busy=true with
-		// Esc ignored by the busy-guard.
-		v.ActionsModal.SetErr("internal: gitlab client unavailable")
-		v.triggerRedraw()
-
-		return
-	}
-	updated, err := v.app.GitLab.CloseMergeRequest(ctx, project.ID, mr.IID, project.PathWithNamespace)
-	v.finishMRAction(ctx, project, mr, "Closed", updated, err)
+	v.runMRMutation(ctx, project, func(ctx context.Context) (*models.MergeRequest, error) {
+		return v.app.GitLab.CloseMergeRequest(ctx, project.ID, mr.IID, project.PathWithNamespace)
+	})
 }
 
 func (v *Views) runMergeAction(ctx context.Context, project *models.Project, mr *models.MergeRequest, opts gitlab.AcceptOptions) {
+	v.runMRMutation(ctx, project, func(ctx context.Context) (*models.MergeRequest, error) {
+		return v.app.GitLab.AcceptMergeRequest(ctx, project.ID, mr.IID, project.PathWithNamespace, opts)
+	})
+}
+
+// runMRMutation wraps the nil-client guard + finish-or-error tail that the
+// close/merge paths share. The unreachable nil-client branch is preserved
+// (a unit test building a bare Views{} could hit it) so the modal surfaces
+// the failure instead of wedging on busy=true with Esc ignored.
+func (v *Views) runMRMutation(
+	ctx context.Context,
+	project *models.Project,
+	call func(context.Context) (*models.MergeRequest, error),
+) {
 	if v.app == nil || v.app.GitLab == nil {
 		v.ActionsModal.SetErr("internal: gitlab client unavailable")
 		v.triggerRedraw()
 
 		return
 	}
-	updated, err := v.app.GitLab.AcceptMergeRequest(ctx, project.ID, mr.IID, project.PathWithNamespace, opts)
-	v.finishMRAction(ctx, project, mr, "Merged", updated, err)
+	updated, err := call(ctx)
+	v.finishMRAction(ctx, project, updated, err)
 }
 
 //nolint:contextcheck // DetailView.SetMR owns its own context propagation (see G4 ADRs); the ctx arg scopes only the MRs list refetch.
 func (v *Views) finishMRAction(
 	ctx context.Context,
 	project *models.Project,
-	mr *models.MergeRequest,
-	verbDone string,
 	updated *models.MergeRequest,
 	err error,
 ) {
@@ -182,8 +184,9 @@ func (v *Views) finishMRAction(
 	}
 	v.ActionsModal.Close()
 	if v.MRs != nil {
+		// List refetch drops the just-mutated MR from the opened filter; the
+		// MR disappearing from the pane is the success signal. No toast.
 		v.MRs.SetProject(ctx, project)
-		v.MRs.SetTransientStatus(fmt.Sprintf("%s !%d", verbDone, mr.IID))
 	}
 	if v.Detail != nil && updated != nil {
 		// SetMR internally dispatches per-tab fetches on context.Background

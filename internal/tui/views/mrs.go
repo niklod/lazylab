@@ -42,10 +42,6 @@ type MRsView struct {
 	loadErr      error
 	stateFilter  models.MRStateFilter
 	ownerFilter  models.MROwnerFilter
-	// transientStatus surfaces short ephemeral toasts (guard warnings,
-	// action outcomes). Rendered dim on the header line and cleared on
-	// the next project load so the message cannot survive a context switch.
-	transientStatus string
 	// lastSync is the wall-clock time of the most recent successful MR
 	// list commit. Footer renders "last sync <N>s ago" off this value.
 	// Zero when no successful load has completed yet.
@@ -138,7 +134,6 @@ func (v *MRsView) beginLoad(
 	v.allLower = nil
 	v.filtered = nil
 	v.cursor = 0
-	v.transientStatus = ""
 	v.loadSeq++
 
 	return ctx, v.loadSeq, v.stateFilter, v.ownerFilter
@@ -242,25 +237,6 @@ func (v *MRsView) OwnerFilter() models.MROwnerFilter {
 	return v.ownerFilter
 }
 
-// SetTransientStatus stores a short ephemeral message (guard toast, action
-// outcome). Rendered on the header line and cleared on the next project
-// load. Cheap — no timers, no goroutines; the user sees it until they
-// navigate.
-func (v *MRsView) SetTransientStatus(msg string) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	v.transientStatus = msg
-}
-
-// TransientStatus returns the current toast message. Exposed for tests.
-func (v *MRsView) TransientStatus() string {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	return v.transientStatus
-}
-
 // LastSync returns the wall-clock of the most recent successful list
 // commit, or the zero time when no load has succeeded yet. The footer
 // renders "last sync <N>s ago" off this value.
@@ -357,14 +333,12 @@ func (v *MRsView) Render(pane *gocui.View) {
 		return
 	case len(v.filtered) == 0:
 		pane.WriteString(mrsHeader(0, len(v.all), v.stateFilter, v.ownerFilter))
-		v.writeTransientStatusLocked(pane)
 		writeMRsEmptyState(pane, v.stateFilter, v.ownerFilter)
 
 		return
 	}
 
 	pane.WriteString(mrsHeader(len(v.filtered), len(v.all), v.stateFilter, v.ownerFilter))
-	v.writeTransientStatusLocked(pane)
 
 	innerW, _ := pane.InnerSize()
 	for _, mr := range v.filtered {
@@ -375,21 +349,8 @@ func (v *MRsView) Render(pane *gocui.View) {
 	}
 
 	if v.cursor >= 0 && v.cursor < len(v.filtered) {
-		offset := 1 // header line
-		if v.transientStatus != "" {
-			offset++
-		}
-		placeCursor(pane, v.cursor+offset, len(v.filtered)+offset)
+		placeCursor(pane, v.cursor+1, len(v.filtered)+1)
 	}
-}
-
-// writeTransientStatusLocked prints the ephemeral toast (guard/action
-// outcome) on its own line below the header. Caller must hold v.mu.
-func (v *MRsView) writeTransientStatusLocked(pane *gocui.View) {
-	if v.transientStatus == "" {
-		return
-	}
-	pane.WriteString(dim(" "+v.transientStatus) + "\n")
 }
 
 // mrsHeader builds the dim "[2] Merge Requests · state:X · owner:Y · N/M"

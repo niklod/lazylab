@@ -322,10 +322,8 @@ func manageMRActionsModal(g *gocui.Gui, v *views.Views, maxX, maxY int) error {
 		return deleteViewIfPresent(g, keymap.ViewMRActionsModal)
 	}
 
-	h := views.ModalCloseHeight
-	if v.ActionsModal.Kind() == views.ModalMerge {
-		h = views.ModalMergeHeight
-	}
+	snap := v.ActionsModal.Snapshot()
+	h := views.ModalHeight(snap.Kind, len(snap.ErrLines))
 	w := views.ModalWidth
 	if w > maxX-4 {
 		w = maxX - 4
@@ -341,7 +339,7 @@ func manageMRActionsModal(g *gocui.Gui, v *views.Views, maxX, maxY int) error {
 	y0 := (maxY - h) / 2
 	r := rect{x0: x0, y0: y0, x1: x0 + w, y1: y0 + h}
 
-	title := v.ActionsModal.Title()
+	title := views.TitleFor(snap.Kind)
 	if err := mountSubpane(g, keymap.ViewMRActionsModal, r, func(pv *gocui.View) {
 		pv.Frame = true
 		pv.Wrap = false
@@ -365,7 +363,11 @@ func manageMRActionsModal(g *gocui.Gui, v *views.Views, maxX, maxY int) error {
 	pv.FrameColor = theme.ColorAccent
 	pv.TitleColor = theme.ColorAccent
 
-	v.ActionsModal.Render(pv)
+	// RenderSnap shares the snapshot we already took above so the pane height
+	// and body are always computed from the same mutex observation — no
+	// single-frame race where the pane is sized for N err lines but Render
+	// writes N+1.
+	v.ActionsModal.RenderSnap(pv, snap)
 
 	return nil
 }

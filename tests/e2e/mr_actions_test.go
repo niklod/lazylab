@@ -267,6 +267,27 @@ func (s *MRActionsSuite) footerBuffer() string {
 	return pane.Buffer()
 }
 
+// stripANSI drops SGR escape sequences so assertions don't need to know the
+// exact theme bytes around the content they're checking for.
+func stripANSI(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != 0x1b || i+1 >= len(s) || s[i+1] != '[' {
+			out.WriteByte(s[i])
+
+			continue
+		}
+		// Skip through the 'm' terminator.
+		j := i + 2
+		for j < len(s) && s[j] != 'm' {
+			j++
+		}
+		i = j
+	}
+
+	return out.String()
+}
+
 func (s *MRActionsSuite) loadProjectAndMRs() {
 	s.Require().NoError(s.v.Repos.LoadSync(context.Background()))
 	s.Require().NoError(s.layoutTick())
@@ -298,7 +319,6 @@ func (s *MRActionsSuite) confirmInlineClose() {
 	}
 	modal.Close()
 	s.Require().NoError(s.v.MRs.SetProjectSync(context.Background(), project))
-	s.v.MRs.SetTransientStatus(fmt.Sprintf("Closed !%d", snap.MR.IID))
 	if updated != nil {
 		s.v.Detail.SetMR(project, updated)
 	}
@@ -325,7 +345,6 @@ func (s *MRActionsSuite) confirmInlineMerge() {
 	}
 	modal.Close()
 	s.Require().NoError(s.v.MRs.SetProjectSync(context.Background(), project))
-	s.v.MRs.SetTransientStatus(fmt.Sprintf("Merged !%d", snap.MR.IID))
 	if updated != nil {
 		s.v.Detail.SetMR(project, updated)
 	}
@@ -349,8 +368,9 @@ func (s *MRActionsSuite) TestCloseConfirm_SendsStateEventAndRefreshesList() {
 	s.Require().True(strings.HasSuffix(muts[0].path, "/merge_requests/10"), "close uses Update endpoint, not /merge")
 	s.Require().Equal("close", muts[0].body["state_event"])
 
-	s.Require().False(s.v.ActionsModal.IsActive())
-	s.Require().Equal("Closed !10", s.v.MRs.TransientStatus())
+	s.Require().False(s.v.ActionsModal.IsActive(), "success closes the modal")
+	_, total := s.v.MRs.CursorInfo()
+	s.Require().Zero(total, "refetch drops the closed MR from the opened filter")
 }
 
 func (s *MRActionsSuite) TestCloseCancel_NoMutation() {
@@ -367,7 +387,7 @@ func (s *MRActionsSuite) TestCloseCancel_NoMutation() {
 	s.Require().Empty(s.mutations())
 }
 
-func (s *MRActionsSuite) TestCloseOnMergedMR_NoModalShowsTransientStatus() {
+func (s *MRActionsSuite) TestCloseOnMergedMR_OpensGuardedModal() {
 	merged := "merged"
 	s.mrState.Store(&merged)
 
@@ -376,10 +396,15 @@ func (s *MRActionsSuite) TestCloseOnMergedMR_NoModalShowsTransientStatus() {
 	s.Require().NoError(s.dispatch(keymap.ViewMRs, 'x'))
 	s.Require().NoError(s.layoutTick())
 
-	s.Require().False(s.v.ActionsModal.IsActive())
-	s.Require().Contains(s.v.MRs.TransientStatus(), "Cannot close")
-	s.Require().Contains(s.v.MRs.TransientStatus(), "!10")
-	s.Require().Empty(s.mutations())
+	snap := s.v.ActionsModal.Snapshot()
+	s.Require().True(snap.Active, "guard must open the modal locked instead of skipping it")
+	s.Require().True(snap.Locked)
+	s.Require().Contains(snap.ErrMsg, "Cannot close")
+	s.Require().Contains(snap.ErrMsg, "!10")
+	s.Require().Empty(s.mutations(), "guard must not reach the API")
+
+	buf := stripANSI(s.modalBuffer())
+	s.Require().Contains(buf, "Cannot close", "guard reason must render inside the modal body")
 }
 
 func (s *MRActionsSuite) TestFooter_CloseModalActive_ShowsConfirmCancelOnly() {
@@ -448,7 +473,12 @@ func (s *MRActionsSuite) TestMergeConfirm_DefaultOptionsSendDeleteBranchOnly() {
 	s.Require().Contains(muts[0].path, "/merge_requests/10/merge")
 	s.Require().Equal(true, muts[0].body["should_remove_source_branch"])
 	s.Require().Equal(false, muts[0].body["squash"])
-	s.Require().Equal("Merged !10", s.v.MRs.TransientStatus())
+	s.Require().False(s.v.ActionsModal.IsActive(), "merge success closes the modal")
+	// Test handler returns the merged MR fixture unconditionally (it does
+	// not honour ?state=), so we only assert the mutation succeeded and the
+	// modal closed — the "MR disappears from opened filter" contract is
+	// exercised in TestCloseConfirm_SendsStateEventAndRefreshesList where
+	// the handler returns an empty list for state=closed.
 }
 
 func (s *MRActionsSuite) TestMergeToggleSquash_SendsBothFlags() {
@@ -483,7 +513,7 @@ func (s *MRActionsSuite) TestMergeToggleDeleteBranch_SendsDeleteBranchOff() {
 	s.Require().Equal(false, muts[0].body["squash"])
 }
 
-func (s *MRActionsSuite) TestMergeOnMergedMR_NoModal() {
+func (s *MRActionsSuite) TestMergeOnMergedMR_OpensGuardedModal() {
 	merged := "merged"
 	s.mrState.Store(&merged)
 	s.loadProjectAndMRs()
@@ -491,8 +521,10 @@ func (s *MRActionsSuite) TestMergeOnMergedMR_NoModal() {
 	s.Require().NoError(s.dispatch(keymap.ViewMRs, 'M'))
 	s.Require().NoError(s.layoutTick())
 
-	s.Require().False(s.v.ActionsModal.IsActive())
-	s.Require().Contains(s.v.MRs.TransientStatus(), "Cannot merge")
+	snap := s.v.ActionsModal.Snapshot()
+	s.Require().True(snap.Active)
+	s.Require().True(snap.Locked)
+	s.Require().Contains(snap.ErrMsg, "Cannot merge")
 	s.Require().Empty(s.mutations())
 }
 
@@ -520,16 +552,6 @@ func (s *MRActionsSuite) TestEnterWhileBusy_DoubleConfirmGuard() {
 	s.Require().NoError(s.dispatch(keymap.ViewMRActionsModal, gocui.KeyEnter))
 
 	s.Require().Empty(s.mutations(), "Enter while busy must not fire a second mutation")
-}
-
-func (s *MRActionsSuite) TestSetProject_ClearsTransientStatus() {
-	s.loadProjectAndMRs()
-	s.v.MRs.SetTransientStatus("something happened")
-	s.Require().Equal("something happened", s.v.MRs.TransientStatus())
-
-	s.Require().NoError(s.v.MRs.SetProjectSync(context.Background(), s.v.Repos.SelectedProject()))
-
-	s.Require().Empty(s.v.MRs.TransientStatus(), "SetProject must clear the transient toast")
 }
 
 func (s *MRActionsSuite) selectMRIntoDetail() {
@@ -585,7 +607,7 @@ func (s *MRActionsSuite) TestMergeFromConversationTab_OpensModal() {
 	s.Require().Equal(views.ModalMerge, s.v.ActionsModal.Kind())
 }
 
-func (s *MRActionsSuite) TestCloseFromDetailPane_MergedMR_ShowsToastWithoutModal() {
+func (s *MRActionsSuite) TestCloseFromDetailPane_MergedMR_OpensGuardedModal() {
 	merged := "merged"
 	s.mrState.Store(&merged)
 
@@ -595,10 +617,11 @@ func (s *MRActionsSuite) TestCloseFromDetailPane_MergedMR_ShowsToastWithoutModal
 	s.Require().NoError(s.dispatch(keymap.ViewDetail, 'x'))
 	s.Require().NoError(s.layoutTick())
 
-	s.Require().False(s.v.ActionsModal.IsActive(), "merged MR must not open the modal")
-	status := s.v.MRs.TransientStatus()
-	s.Require().Contains(status, "Cannot close")
-	s.Require().Contains(status, "!10")
+	snap := s.v.ActionsModal.Snapshot()
+	s.Require().True(snap.Active, "guard opens a locked modal so the user sees the reason")
+	s.Require().True(snap.Locked)
+	s.Require().Contains(snap.ErrMsg, "Cannot close")
+	s.Require().Contains(snap.ErrMsg, "!10")
 	s.Require().Empty(s.mutations())
 }
 
@@ -621,7 +644,8 @@ func (s *MRActionsSuite) TestCloseFromPipelinePane_ConfirmMutatesAndClosesModal(
 	s.Require().Equal(http.MethodPut, muts[0].method)
 	s.Require().Equal("close", muts[0].body["state_event"])
 	s.Require().False(s.v.ActionsModal.IsActive())
-	s.Require().Equal("Closed !10", s.v.MRs.TransientStatus())
+	_, total := s.v.MRs.CursorInfo()
+	s.Require().Zero(total, "closed MR leaves the opened-filter list")
 }
 
 func (s *MRActionsSuite) TestMutationError_KeepsModalWithErrMsg() {
@@ -644,6 +668,92 @@ func (s *MRActionsSuite) TestMutationError_KeepsModalWithErrMsg() {
 
 	s.Require().True(s.v.ActionsModal.IsActive(), "error keeps modal open")
 	s.Require().NotEmpty(s.v.ActionsModal.ErrMsg())
+}
+
+func (s *MRActionsSuite) TestMutationError_WrapsLongErrorWithinModal() {
+	s.loadProjectAndMRs()
+
+	s.srv.Close()
+	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		long := strings.Repeat("the merge request is not in a mergeable state yet ", 10)
+		_, _ = fmt.Fprintf(w, `{"message":%q}`, long)
+	}))
+	newClient, err := gitlab.New(config.GitLabConfig{URL: s.srv.URL, Token: "e2e-secret"}, gitlab.WithHTTPClient(s.srv.Client()))
+	s.Require().NoError(err)
+	s.app.GitLab = newClient
+
+	s.Require().NoError(s.dispatch(keymap.ViewMRs, 'M'))
+	s.Require().NoError(s.layoutTick())
+
+	s.confirmInlineMerge()
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().True(s.v.ActionsModal.IsActive(), "error keeps modal open")
+	snap := s.v.ActionsModal.Snapshot()
+	s.Require().GreaterOrEqual(len(snap.ErrLines), 2, "long upstream error must wrap into multiple lines")
+
+	// Every wrapped err line must fit the inner width — otherwise the pane
+	// frame is crossed just like the bug we're fixing.
+	for _, line := range snap.ErrLines {
+		s.Require().LessOrEqualf(
+			len([]rune(line)), views.ModalWidth-4,
+			"wrapped err line %q exceeds inner width", line,
+		)
+	}
+}
+
+func (s *MRActionsSuite) TestCloseModal_ShowsActionButtons() {
+	s.loadProjectAndMRs()
+
+	s.Require().NoError(s.dispatch(keymap.ViewMRs, 'x'))
+	s.Require().NoError(s.layoutTick())
+
+	buf := stripANSI(s.modalBuffer())
+	s.Require().Contains(buf, "[ Close (Enter) ]", "close modal must render its primary button")
+	s.Require().Contains(buf, "[ Cancel (Esc) ]")
+}
+
+func (s *MRActionsSuite) TestMergeModal_ShowsActionButtons() {
+	s.loadProjectAndMRs()
+
+	s.Require().NoError(s.dispatch(keymap.ViewMRs, 'M'))
+	s.Require().NoError(s.layoutTick())
+
+	buf := stripANSI(s.modalBuffer())
+	s.Require().Contains(buf, "[ Merge (Enter) ]", "merge modal must render its primary button")
+	s.Require().Contains(buf, "[ Cancel (Esc) ]")
+}
+
+func (s *MRActionsSuite) TestGuardedModal_EnterIsNoOp() {
+	merged := "merged"
+	s.mrState.Store(&merged)
+	s.loadProjectAndMRs()
+
+	s.Require().NoError(s.dispatch(keymap.ViewMRs, 'x'))
+	s.Require().NoError(s.layoutTick())
+	s.Require().True(s.v.ActionsModal.Locked())
+
+	s.Require().NoError(s.dispatch(keymap.ViewMRActionsModal, gocui.KeyEnter))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().True(s.v.ActionsModal.IsActive(), "Enter on a locked guard modal must keep it open")
+	s.Require().Empty(s.mutations(), "locked modal must never fire a mutation")
+}
+
+func (s *MRActionsSuite) TestGuardedModal_EscClosesModal() {
+	merged := "merged"
+	s.mrState.Store(&merged)
+	s.loadProjectAndMRs()
+
+	s.Require().NoError(s.dispatch(keymap.ViewMRs, 'x'))
+	s.Require().NoError(s.layoutTick())
+	s.Require().True(s.v.ActionsModal.Locked())
+
+	s.Require().NoError(s.dispatch(keymap.ViewMRActionsModal, gocui.KeyEsc))
+	s.Require().NoError(s.layoutTick())
+
+	s.Require().False(s.v.ActionsModal.IsActive(), "Esc must dismiss a guarded modal")
 }
 
 func TestMRActionsSuite(t *testing.T) {

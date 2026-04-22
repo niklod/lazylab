@@ -202,7 +202,7 @@ func (s *MRActionsBindSuite) TestOpenFromDetailPane_FallsBackToMRsWhenDetailEmpt
 	s.Require().Equal(5, snap.MR.IID, "empty detail view must fall through to the MRs cursor")
 }
 
-func (s *MRActionsBindSuite) TestStateGuardFromDetailPane_RoutesToastToMRsView() {
+func (s *MRActionsBindSuite) TestStateGuardFromDetailPane_OpensLockedModalWithErr() {
 	merged := &models.MergeRequest{IID: 10, Title: "Done", State: models.MRStateMerged}
 	s.seedMRsCursor(merged)
 	s.seedDetailMR(merged)
@@ -211,11 +211,31 @@ func (s *MRActionsBindSuite) TestStateGuardFromDetailPane_RoutesToastToMRsView()
 	s.Require().NoError(err)
 	s.Require().NoError(s.v.openCloseModal(s.g, pv))
 
-	s.Require().False(s.v.ActionsModal.IsActive(), "merged MR must not open the modal")
-	status := s.v.MRs.TransientStatus()
-	s.Require().Contains(status, "Cannot close")
-	s.Require().Contains(status, "!10")
-	s.Require().Contains(status, "merged")
+	snap := s.v.ActionsModal.Snapshot()
+	s.Require().True(snap.Active, "guard must open the modal locked, not skip it")
+	s.Require().True(snap.Locked, "guard modal must carry locked=true so Enter is a no-op")
+	s.Require().Contains(snap.ErrMsg, "Cannot close")
+	s.Require().Contains(snap.ErrMsg, "!10")
+	s.Require().Contains(snap.ErrMsg, "merged")
+	s.Require().NotEmpty(snap.ErrLines, "guard reason must wrap into at least one line")
+}
+
+func (s *MRActionsBindSuite) TestConfirmOnLockedModal_IsNoOp() {
+	merged := &models.MergeRequest{IID: 10, Title: "Done", State: models.MRStateMerged}
+	s.seedMRsCursor(merged)
+	s.seedDetailMR(merged)
+
+	pv, err := s.g.View(keymap.ViewDetail)
+	s.Require().NoError(err)
+	s.Require().NoError(s.v.openCloseModal(s.g, pv))
+	s.Require().True(s.v.ActionsModal.Locked())
+
+	// No GitLab client in this suite — if confirmMRAction passed the locked
+	// guard it would kick off a goroutine and SetBusy, so Busy-after stays
+	// false only if the guard held.
+	s.Require().NoError(s.v.confirmMRAction(s.g, nil))
+	s.Require().False(s.v.ActionsModal.Busy(), "locked modal must ignore Enter")
+	s.Require().True(s.v.ActionsModal.IsActive(), "locked modal must stay open until Esc")
 }
 
 func (s *MRActionsBindSuite) TestOpenRecordsActionOriginView() {
@@ -230,7 +250,7 @@ func (s *MRActionsBindSuite) TestOpenRecordsActionOriginView() {
 	s.Require().Equal(keymap.ViewDetailPipelineStages, s.v.actionOriginView)
 }
 
-func (s *MRActionsBindSuite) TestStateGuardDoesNotRecordOrigin() {
+func (s *MRActionsBindSuite) TestStateGuardRecordsOrigin() {
 	merged := &models.MergeRequest{IID: 10, Title: "Done", State: models.MRStateMerged}
 	s.seedMRsCursor(merged)
 	s.seedDetailMR(merged)
@@ -240,7 +260,9 @@ func (s *MRActionsBindSuite) TestStateGuardDoesNotRecordOrigin() {
 	s.Require().NoError(err)
 	s.Require().NoError(s.v.openCloseModal(s.g, pv))
 
-	s.Require().Equal("stale", s.v.actionOriginView, "state-guard path must not rewrite actionOriginView; it only opens modal paths")
+	// Guard now opens a (locked) modal instead of showing a toast, so
+	// origin must be captured — Esc should return focus to the detail pane.
+	s.Require().Equal(keymap.ViewDetail, s.v.actionOriginView)
 }
 
 func (s *MRActionsBindSuite) TestFocusRestoreTarget_UsesOriginWhenMounted() {
