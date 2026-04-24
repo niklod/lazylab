@@ -78,6 +78,7 @@ type DetailView struct {
 	app *appcontext.AppContext
 
 	mu       sync.Mutex
+	project  *models.Project
 	mr       *models.MergeRequest
 	stats    *models.DiscussionStats
 	cached   string
@@ -492,6 +493,7 @@ func (d *DetailView) commitMR(project *models.Project, mr *models.MergeRequest) 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	d.project = project
 	d.mr = mr
 	d.stats = nil
 	d.approvals = nil

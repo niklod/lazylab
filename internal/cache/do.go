@@ -27,7 +27,7 @@ func Do[T any](
 		if data, typeOK := e.data.(T); typeOK {
 			if e.isStale(c.now(), c.ttl) {
 				c.debugf("cache stale %q, scheduling refresh", key)
-				c.scheduleRefresh(key, wrapLoader(loader))
+				c.scheduleRefresh(namespace, key, wrapLoader(loader))
 			} else {
 				c.debugf("cache hit %q", key)
 			}
@@ -43,7 +43,7 @@ func Do[T any](
 		c.putEntry(key, e)
 		if e.isStale(c.now(), c.ttl) {
 			c.debugf("disk cache stale %q, scheduling refresh", key)
-			c.scheduleRefresh(key, wrapLoader(loader))
+			c.scheduleRefresh(namespace, key, wrapLoader(loader))
 		} else {
 			c.debugf("disk cache hit %q", key)
 		}

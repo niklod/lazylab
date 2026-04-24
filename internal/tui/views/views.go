@@ -43,6 +43,49 @@ func New(g *gocui.Gui, app *appcontext.AppContext) *Views {
 	}
 }
 
+// Dispatch routes a cache-refresh event to the single pane whose namespace
+// matches, so an event for one pane (say mr_pipeline) cannot repaint the
+// others. Each view's OnCacheRefresh gates further on current state (project
+// ID, MR IID) before deciding to re-fetch. ctx derives from the cache's
+// rootCtx and cancels on Shutdown; view handlers pass it into their fetch
+// goroutines so in-flight HTTP calls drain on app quit.
+func (v *Views) Dispatch(ctx context.Context, namespace, key string) {
+	if v == nil {
+		return
+	}
+	switch namespace {
+	case cacheNamespaceProjects:
+		if v.Repos != nil {
+			v.Repos.OnCacheRefresh(ctx, namespace, key)
+		}
+	case cacheNamespaceMRList:
+		if v.MRs != nil {
+			v.MRs.OnCacheRefresh(ctx, namespace, key)
+		}
+	case cacheNamespaceMR, cacheNamespaceMRApprovals, cacheNamespaceMRDiscussions,
+		cacheNamespaceMRChanges, cacheNamespaceMRPipeline, cacheNamespaceMRConversation,
+		cacheNamespaceJobTrace:
+		if v.Detail != nil {
+			v.Detail.OnCacheRefresh(ctx, namespace, key)
+		}
+	}
+}
+
+// Cache namespace constants shared between Views.Dispatch and the per-pane
+// OnCacheRefresh handlers. Mirror the strings emitted by the gitlab package
+// (see internal/gitlab/*.go) — out-of-sync values silently drop events.
+const (
+	cacheNamespaceProjects       = "projects"
+	cacheNamespaceMRList         = "mr_list"
+	cacheNamespaceMR             = "mr"
+	cacheNamespaceMRApprovals    = "mr_approvals"
+	cacheNamespaceMRDiscussions  = "mr_discussions"
+	cacheNamespaceMRChanges      = "mr_changes"
+	cacheNamespaceMRPipeline     = "mr_pipeline"
+	cacheNamespaceMRConversation = "mr_conversation"
+	cacheNamespaceJobTrace       = "job_trace"
+)
+
 // Bindings aggregates per-view bindings plus the cross-view wiring that links
 // repos-pane project selection to the mrs pane. Cross-view bindings live here,
 // not on either view, so neither view has to know about the other.

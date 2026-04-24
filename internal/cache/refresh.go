@@ -8,14 +8,16 @@ import "context"
 // via refreshIfPresent, which no-ops when the entry was Invalidated during
 // the fetch.
 //
-// **No event is emitted on success** — by contract, background refreshes
-// must never trigger a TUI re-render (see ADR 009).
+// After a successful store, the OnRefresh callback (if any) fires with the
+// namespace + key, but only when the new payload differs from the previous
+// one (reflect.DeepEqual). Invalidated-mid-flight refreshes and byte-equal
+// payloads never fire — see ADR 021.
 //
 // The c.mu.RLock around wg.Add synchronizes with Shutdown's cancel: Shutdown
 // holds the write lock, so it cannot complete wg.Wait() while a
 // scheduleRefresh call is mid-Add. Without this interlock the goroutine
 // could be registered after Wait returned, leaking past Shutdown.
-func (c *Cache) scheduleRefresh(key string, loader func(context.Context) (any, error)) {
+func (c *Cache) scheduleRefresh(namespace, key string, loader func(context.Context) (any, error)) {
 	c.mu.RLock()
 	if c.rootCtx.Err() != nil {
 		c.mu.RUnlock()
@@ -45,11 +47,18 @@ func (c *Cache) scheduleRefresh(key string, loader func(context.Context) (any, e
 
 			return
 		}
-		if !c.refreshIfPresent(key, data) {
+		stored, changed := c.refreshIfPresent(key, data)
+		if !stored {
 			c.debugf("background refresh discarded for %q (invalidated)", key)
 
 			return
 		}
+		if !changed {
+			c.debugf("background refresh no-op for %q (unchanged)", key)
+
+			return
+		}
+		c.fireRefresh(c.rootCtx, namespace, key)
 		c.debugf("background refresh done for %q", key)
 	}()
 }

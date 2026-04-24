@@ -11,6 +11,7 @@ import (
 	"github.com/jesseduffield/gocui"
 
 	"github.com/niklod/lazylab/internal/appcontext"
+	"github.com/niklod/lazylab/internal/cache"
 	"github.com/niklod/lazylab/internal/gitlab"
 	"github.com/niklod/lazylab/internal/models"
 	"github.com/niklod/lazylab/internal/tui/keymap"
@@ -181,6 +182,7 @@ func (v *MRsView) apply(seq uint64, mrs []*models.MergeRequest, loadErr error) {
 	if seq != v.loadSeq {
 		return // a newer load superseded this one
 	}
+	selectedIID := v.selectedMRIIDLocked()
 	v.loading = false
 	if loadErr != nil {
 		v.loadErr = loadErr
@@ -192,9 +194,119 @@ func (v *MRsView) apply(seq uint64, mrs []*models.MergeRequest, loadErr error) {
 	v.lastSync = time.Now()
 	v.rebuildLowerLocked()
 	v.applyFilterLocked()
-	if v.cursor >= len(v.filtered) {
+	v.restoreCursorByIIDLocked(selectedIID)
+}
+
+// selectedMRIIDLocked returns the IID of the MR currently under the cursor,
+// or 0 when the cursor is invalid / the filtered list is empty. Caller must
+// hold v.mu.
+func (v *MRsView) selectedMRIIDLocked() int {
+	if v.cursor < 0 || v.cursor >= len(v.filtered) {
+		return 0
+	}
+	if m := v.filtered[v.cursor]; m != nil {
+		return m.IID
+	}
+
+	return 0
+}
+
+// restoreCursorByIIDLocked re-seats the cursor on the MR with the given IID
+// after a list swap. When the previous selection no longer exists the
+// cursor clamps to the nearest valid row. Caller must hold v.mu.
+func (v *MRsView) restoreCursorByIIDLocked(selectedIID int) {
+	n := len(v.filtered)
+	if n == 0 {
+		v.cursor = 0
+
+		return
+	}
+	if selectedIID != 0 {
+		for i, m := range v.filtered {
+			if m != nil && m.IID == selectedIID {
+				v.cursor = i
+
+				return
+			}
+		}
+	}
+	if v.cursor < 0 {
 		v.cursor = 0
 	}
+	if v.cursor >= n {
+		v.cursor = n - 1
+	}
+}
+
+// reloadFromCacheRefresh re-issues the MR list fetch without the
+// loading-state wipe that SetProject does — the currently-displayed rows
+// stay visible until the fresh data lands, matching SWR semantics. Used
+// by the cache refresh fan-out.
+func (v *MRsView) reloadFromCacheRefresh(parent context.Context, p *models.Project) {
+	fetchCtx, seq, state, owner := v.beginSilentReload(parent, p)
+	go func() {
+		mrs, err := v.fetchMRs(fetchCtx, p, state, owner)
+		v.g.Update(func(_ *gocui.Gui) error {
+			v.applySilentReload(seq, mrs, err)
+
+			return nil
+		})
+	}()
+}
+
+// ReloadFromCacheRefreshSync is the synchronous counterpart used by
+// integration tests that run without a MainLoop. Production code should
+// call the OnCacheRefresh event-driven path; this entry point skips the
+// goroutine + g.Update hop so tests can drive the refresh fan-out
+// deterministically.
+func (v *MRsView) ReloadFromCacheRefreshSync(ctx context.Context, p *models.Project) error {
+	fetchCtx, seq, state, owner := v.beginSilentReload(ctx, p)
+	mrs, err := v.fetchMRs(fetchCtx, p, state, owner)
+	v.applySilentReload(seq, mrs, err)
+
+	return err
+}
+
+// beginSilentReload is the no-wipe counterpart to beginLoad: it bumps the
+// load sequence and swaps in a fresh cancellable context without clearing
+// v.all / v.filtered / v.cursor. Keeps stale rows on screen between fetch
+// start and apply. Caller must not rely on loading=true to detect a
+// reload in progress.
+func (v *MRsView) beginSilentReload(
+	parent context.Context,
+	p *models.Project,
+) (ctx context.Context, seq uint64, state models.MRStateFilter, owner models.MROwnerFilter) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.cancelLoad != nil {
+		v.cancelLoad()
+	}
+	ctx, v.cancelLoad = context.WithCancel(parent)
+	v.current = p
+	v.loadSeq++
+
+	return ctx, v.loadSeq, v.stateFilter, v.ownerFilter
+}
+
+// applySilentReload mirrors apply but preserves stale rows on error — a
+// transient upstream failure must not clear the list the user is looking
+// at. Cursor preservation by IID handles row re-ordering or insertions.
+func (v *MRsView) applySilentReload(seq uint64, mrs []*models.MergeRequest, loadErr error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if seq != v.loadSeq {
+		return
+	}
+	if loadErr != nil {
+		return
+	}
+	selectedIID := v.selectedMRIIDLocked()
+	v.loadErr = nil
+	v.all = mrs
+	v.lastSync = time.Now()
+	v.rebuildLowerLocked()
+	v.applyFilterLocked()
+	v.restoreCursorByIIDLocked(selectedIID)
 }
 
 // CurrentProject returns the project currently driving this view, or nil.
@@ -293,6 +405,29 @@ func (v *MRsView) cursorInfoLocked() (index, total int) {
 	}
 
 	return v.cursor + 1, total
+}
+
+// OnCacheRefresh re-issues the mr_list fetch when the cache reports a
+// background refresh landed new data for the currently-displayed project.
+// The reload path preserves cursor (by IID), search query, and filter state.
+// Events for other namespaces, other projects, or when no project is
+// selected are dropped. ctx derives from the cache's rootCtx so the
+// reload cancels on app quit.
+func (v *MRsView) OnCacheRefresh(ctx context.Context, namespace, key string) {
+	if namespace != cacheNamespaceMRList {
+		return
+	}
+	v.mu.Lock()
+	project := v.current
+	v.mu.Unlock()
+	if project == nil {
+		return
+	}
+	projectPrefix := cache.MakeKey(cacheNamespaceMRList, project.ID)
+	if key != projectPrefix && !strings.HasPrefix(key, projectPrefix+":") {
+		return
+	}
+	v.reloadFromCacheRefresh(ctx, project)
 }
 
 // SelectedMR returns the merge request under the cursor, or nil.

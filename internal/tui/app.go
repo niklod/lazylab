@@ -43,6 +43,17 @@ func Run(ctx context.Context, app *appcontext.AppContext) error {
 		return fmt.Errorf("tui: register keybindings: %w", err)
 	}
 
+	if app.Cache != nil {
+		app.Cache.SetOnRefresh(func(refreshCtx context.Context, namespace, key string) {
+			g.Update(func(*gocui.Gui) error {
+				v.Dispatch(refreshCtx, namespace, key)
+
+				return nil
+			})
+		})
+		defer app.Cache.SetOnRefresh(nil)
+	}
+
 	v.Repos.Load(ctx)
 
 	if err := g.MainLoop(); err != nil && !errors.Is(err, gocui.ErrQuit) {

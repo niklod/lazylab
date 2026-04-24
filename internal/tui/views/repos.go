@@ -48,6 +48,11 @@ type ReposView struct {
 	searchActive bool
 	loading      bool
 	loadErr      error
+	// loadSeq guards against stale apply: a refresh-triggered Load can race
+	// the initial boot Load. Both start goroutines that call apply; without
+	// a seq check the slower one overwrites the faster, potentially setting
+	// loadErr after a successful newer load already landed.
+	loadSeq uint64
 }
 
 // NewRepos constructs a ReposView bound to g and app. No I/O happens until Load.
@@ -58,10 +63,14 @@ func NewRepos(g *gocui.Gui, app *appcontext.AppContext) *ReposView {
 // Load fetches the project list in a goroutine and publishes the result via
 // g.Update so all state mutation happens on the main loop thread.
 func (v *ReposView) Load(ctx context.Context) {
+	v.mu.Lock()
+	v.loadSeq++
+	seq := v.loadSeq
+	v.mu.Unlock()
 	go func() {
 		projects, err := v.fetchProjects(ctx)
 		v.g.Update(func(_ *gocui.Gui) error {
-			v.apply(projects, err)
+			v.apply(seq, projects, err)
 
 			return nil
 		})
@@ -72,8 +81,12 @@ func (v *ReposView) Load(ctx context.Context) {
 // run without a gocui MainLoop to consume g.Update callbacks. Never call from
 // production code — the main loop path is Load.
 func (v *ReposView) LoadSync(ctx context.Context) error {
+	v.mu.Lock()
+	v.loadSeq++
+	seq := v.loadSeq
+	v.mu.Unlock()
 	projects, err := v.fetchProjects(ctx)
-	v.apply(projects, err)
+	v.apply(seq, projects, err)
 
 	return err
 }
@@ -87,23 +100,78 @@ func (v *ReposView) fetchProjects(ctx context.Context) ([]*models.Project, error
 	return ps, nil
 }
 
-func (v *ReposView) apply(projects []*models.Project, loadErr error) {
+func (v *ReposView) apply(seq uint64, projects []*models.Project, loadErr error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if seq != v.loadSeq {
+		return // a newer load superseded this one
+	}
 	v.loading = false
 	if loadErr != nil {
 		v.loadErr = loadErr
 
 		return
 	}
+	selectedID := v.selectedProjectIDLocked()
 	v.loadErr = nil
 	v.all = projects
 	v.refreshFavSetLocked()
 	v.sortLocked()
 	v.applyFilterLocked()
-	if v.cursor >= len(v.filtered) {
+	v.restoreCursorByIDLocked(selectedID)
+}
+
+// selectedProjectIDLocked returns the ID of the project currently under the
+// cursor, or 0 when the cursor is invalid / the filtered list is empty.
+// Caller must hold v.mu.
+func (v *ReposView) selectedProjectIDLocked() int {
+	if v.cursor < 0 || v.cursor >= len(v.filtered) {
+		return 0
+	}
+	if p := v.filtered[v.cursor]; p != nil {
+		return p.ID
+	}
+
+	return 0
+}
+
+// restoreCursorByIDLocked re-seats the cursor on the project with the given
+// ID after a list swap. When the previous selection no longer exists the
+// cursor clamps to the nearest valid row. Caller must hold v.mu.
+func (v *ReposView) restoreCursorByIDLocked(selectedID int) {
+	n := len(v.filtered)
+	if n == 0 {
+		v.cursor = 0
+
+		return
+	}
+	if selectedID != 0 {
+		for i, p := range v.filtered {
+			if p != nil && p.ID == selectedID {
+				v.cursor = i
+
+				return
+			}
+		}
+	}
+	if v.cursor < 0 {
 		v.cursor = 0
 	}
+	if v.cursor >= n {
+		v.cursor = n - 1
+	}
+}
+
+// OnCacheRefresh re-issues the projects fetch when the cache signals a
+// background refresh of the projects namespace landed new data. Cursor,
+// search query, and search-active state are preserved by apply. ctx
+// derives from the cache's rootCtx so the re-fetch cancels on app quit
+// rather than racing process exit.
+func (v *ReposView) OnCacheRefresh(ctx context.Context, namespace, _ string) {
+	if namespace != cacheNamespaceProjects {
+		return
+	}
+	v.Load(ctx)
 }
 
 func (v *ReposView) rebuildLowerLocked() {

@@ -3,14 +3,27 @@ package cache
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/afero"
 
 	"github.com/niklod/lazylab/internal/config"
 )
+
+// RefreshFunc is invoked on the cache's refresh goroutine after a background
+// refresh has successfully swapped a new, non-equal payload into memory+disk.
+// ctx derives from the cache's rootCtx — it cancels when Shutdown runs, so
+// consumers that spawn further work should honour it to drain cleanly.
+// The consumer must not block — the expected pattern is to hand off to the
+// TUI main loop via gocui.Update and return immediately. See ADR 021.
+//
+// Declared as a named type (not an alias) so signature drift at the call
+// site produces a compile error rather than a silent no-op.
+type RefreshFunc func(ctx context.Context, namespace, key string)
 
 // LogFunc is an optional sink for debug-level cache events. nil disables logging.
 type LogFunc func(format string, args ...any)
@@ -33,9 +46,10 @@ func WithClock(now func() time.Time) Option {
 }
 
 // Cache is an in-memory + disk stale-while-revalidate cache. Background
-// refreshes update memory+disk silently — by design, they do NOT emit any
-// event. Fresh data surfaces only on the next caller-driven Do call
-// (see ADR 009).
+// refreshes that change stored data fire the RefreshFunc installed via
+// SetOnRefresh so consumers (the TUI) can fan out a selective re-render
+// of views whose displayed namespace matches (see ADR 021 superseding
+// ADR 009).
 type Cache struct {
 	mu      sync.RWMutex
 	entries map[string]*entry
@@ -49,8 +63,13 @@ type Cache struct {
 	logf LogFunc
 	now  func() time.Time
 
+	// onRefresh is read on every successful background refresh and written
+	// at most once at TUI startup. atomic.Pointer avoids contending with mu
+	// on the hot refresh path.
+	onRefresh atomic.Pointer[RefreshFunc]
+
 	// rootCtx is the parent context for background refresh goroutines; canceling
-	// it during Shutdown propagates cancellation to in-flight loaders. See ADR 009.
+	// it during Shutdown propagates cancellation to in-flight loaders.
 	rootCtx      context.Context //nolint:containedctx // shutdown cancellation of background refreshes
 	cancel       context.CancelFunc
 	shutdownOnce sync.Once
@@ -171,40 +190,76 @@ func (c *Cache) putEntry(key string, e *entry) {
 	c.entries[key] = e
 }
 
-// put stores data at key in both memory and disk. Held under c.mu so it
-// serializes with Invalidate — see refreshIfPresent for the background
-// variant that additionally checks the entry still exists before writing.
+// put stores data at key in both memory and disk. The memory swap happens
+// under c.mu so it serializes with Invalidate; the disk write is moved
+// outside the lock so concurrent invalidations do not queue behind the
+// syscall. See refreshIfPresent for the background-refresh variant that
+// additionally checks the entry still exists before writing.
 func (c *Cache) put(key string, data any) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.ensureDir()
 	e := &entry{data: data, createdAt: c.now()}
 	c.entries[key] = e
+	c.mu.Unlock()
+
+	c.ensureDir()
 	if err := saveDisk(c.fs, c.dir, key, e.createdAt, data); err != nil {
 		c.debugf("disk save failed for %q: %v", key, err)
 	}
+}
+
+// SetOnRefresh installs the callback invoked after a successful background
+// refresh whose payload differs from the previous entry. Passing nil clears
+// any previous callback. Safe to call concurrently; the callback itself must
+// not block the cache goroutine.
+func (c *Cache) SetOnRefresh(fn RefreshFunc) {
+	if fn == nil {
+		c.onRefresh.Store(nil)
+
+		return
+	}
+	c.onRefresh.Store(&fn)
+}
+
+func (c *Cache) fireRefresh(ctx context.Context, namespace, key string) {
+	p := c.onRefresh.Load()
+	if p == nil {
+		return
+	}
+	(*p)(ctx, namespace, key)
 }
 
 // refreshIfPresent stores background-refreshed data only if the entry is
 // still in the cache. An Invalidate that ran while the loader was in-flight
 // removes the entry; this check prevents the refresh from silently
 // resurrecting stale (pre-mutation) data under the original key.
-func (c *Cache) refreshIfPresent(key string, data any) bool {
+//
+// Returns (stored, changed): stored is false when the entry was invalidated
+// mid-flight; changed is true when the swapped-in payload differs from the
+// previous one (reflect.DeepEqual). Callers use changed to skip firing the
+// OnRefresh callback on no-op repaints — see ADR 021.
+//
+// Disk I/O happens OUTSIDE c.mu: the write lock is released as soon as the
+// memory swap lands, so a concurrent Invalidate / InvalidateMR does not
+// serialize behind the disk syscall (which can be tens of KB on mr_list).
+func (c *Cache) refreshIfPresent(key string, data any) (stored, changed bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	old, ok := c.entries[key]
+	if !ok {
+		c.mu.Unlock()
 
-	if _, ok := c.entries[key]; !ok {
-		return false
+		return false, false
 	}
-	c.ensureDir()
+	changed = !reflect.DeepEqual(old.data, data)
 	e := &entry{data: data, createdAt: c.now()}
 	c.entries[key] = e
+	c.mu.Unlock()
+
+	c.ensureDir()
 	if err := saveDisk(c.fs, c.dir, key, e.createdAt, data); err != nil {
 		c.debugf("disk save failed for %q: %v", key, err)
 	}
 
-	return true
+	return true, changed
 }
 
 func (c *Cache) ensureDir() {

@@ -1,5 +1,9 @@
 # 009: Go Cache Port — Generics + No Background TUI Re-Render
 
+## Status
+
+**Superseded (2026-04-24) by ADR 021.** The "no background TUI re-render" rule in this ADR has been reversed: background refreshes that change state now fire a `SetOnRefresh(namespace, key)` callback the TUI fans out selectively. The generics / disk-format / lifecycle decisions below remain in force. Do NOT apply the "What NOT to add" list to new code — it has been rewritten below.
+
 ## Decision
 
 Port the Python file-backed cache (ADR 006) to Go as package `internal/cache/`,
@@ -85,20 +89,19 @@ versa), which simplifies the cut-over in Phase G7. Go models carry the same
 
 ## What NOT to add
 
-The following were considered and rejected to preserve the no-background-
-rerender contract:
+*(Rewritten 2026-04-24 for ADR 021. The event-emission ban from the original revision has been lifted; see ADR 021 for the supported `SetOnRefresh` API.)*
 
-- `func (c *Cache) OnRefresh(func(namespace, key string))` — a subscribe hook
-  would invite exactly the kind of TUI event plumbing this ADR exists to
-  forbid.
-- `chan CacheEvent` field — same objection.
-- Polling ticker inside `Cache` — ownership belongs to views that genuinely
-  need live updates (pipeline status is the most likely candidate in G6).
-  Those should implement their own polling loop calling `Do` directly.
-
-Future contributors: if a view truly needs live refresh, implement it as an
-explicit per-view polling goroutine that reads through `Do[T]`. Do not
-re-introduce a global cache event.
+- Polling ticker inside `Cache`. Ownership stays with views that genuinely
+  need sub-TTL cadence (the user-toggled pipeline live log is the only
+  current example). Namespaces that already flow through `cache.Do` are
+  covered by the SWR background refresh + the ADR 021 fan-out; a ticker on
+  top is pure HTTP amplification.
+- Multi-subscriber channel API on `Cache`. There is one consumer (the TUI
+  dispatcher). Promote to a slice under a lock only if a second consumer
+  actually appears. See ADR 021 "Deliberate choices".
+- Forced full-tree repaint on any cache event. Selective routing +
+  key-matching + cursor preservation is what keeps flicker away; broadcasting
+  defeats all three.
 
 ## Alternatives considered
 
